@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetra Player v30: The Payload</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: monospace; }
+        
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; width: 320px; padding: 20px;
+            background: rgba(20, 20, 20, 0.95); border: 1px solid #444; border-radius: 8px;
+            color: #d4af37; z-index: 100;
+        }
+
+        .btn-gold {
+            background: #d4af37; color: #000; border: none; padding: 10px; width: 100%;
+            font-weight: bold; cursor: pointer; margin-bottom: 5px; letter-spacing: 1px;
+        }
+        .btn-gold:hover { background: #fff; }
+        
+        .btn-fire {
+            background: #ff3333; color: #fff; border: none; padding: 15px; width: 100%;
+            font-weight: bold; cursor: pointer; margin-top: 15px; font-size: 1.2em; letter-spacing: 2px;
+        }
+        .btn-fire:hover { background: #ff6666; }
+
+        input[type=range] { width: 100%; margin: 10px 0; cursor: pointer; }
+        
+        .status-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h3 style="border-bottom:1px solid #555; padding-bottom:10px; margin-top:0;">PAYLOAD TEST</h3>
+        
+        <button class="btn-gold" id="btn-lock">SNAP TO GOLDEN MEAN (φ)</button>
+        
+        <div class="status-row">
+            <span>THROAT RATIO</span>
+            <span id="ratio-display" style="color:#fff">0.50</span>
+        </div>
+        <input type="range" id="aperture-slider" min="20" max="80" value="50">
+        
+        <div style="margin-top:15px; padding-top:10px; border-top:1px solid #333;">
+            <div class="status-row">
+                <span>SYSTEM STATUS</span>
+                <span id="status-text" style="color:#888">ANALYZING</span>
+            </div>
+        </div>
+        
+        <div style="color:#00ffff; margin-top:15px;">INPUT ENERGY (TENSION)</div>
+        <input type="range" id="tension-slider" min="0" max="100" value="80">
+        
+        <button class="btn-fire" id="btn-fire">FIRE SIGNAL</button>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        window.addEventListener('load', function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            
+            let width, height;
+            let angleX = -0.6; 
+            let angleY = 0.8;
+            let throat = 0.50; 
+            let tension = 80;
+            let time = 0;
+            const GOLDEN_RATIO = 0.61803;
+
+            // PHOTON STATE
+            let photons = []; // Array to hold active signals
+
+            function resize() {
+                width = window.innerWidth;
+                height = window.innerHeight;
+                canvas.width = width;
+                canvas.height = height;
+            }
+            window.addEventListener('resize', resize);
+            resize();
+
+            let isDragging = false;
+            let lastX, lastY;
+            canvas.addEventListener('mousedown', e => { isDragging = true; lastX = e.clientX; lastY = e.clientY; });
+            window.addEventListener('mouseup', () => isDragging = false);
+            window.addEventListener('mousemove', e => {
+                if(!isDragging) return;
+                angleY += (e.clientX - lastX) * 0.01;
+                angleX += (e.clientY - lastY) * 0.01;
+                lastX = e.clientX;
+                lastY = e.clientY;
+            });
+
+            // PHYSICS STATE
+            function getPhysics(ratio) {
+                let distHalf = Math.abs(ratio - 0.5);
+                let distGold = Math.abs(ratio - GOLDEN_RATIO);
+                
+                if (distHalf < 0.05) {
+                    return { mode: "UNSTABLE", color: "#ff3333", amp: 2.5, phase: 0.2 };
+                } else if (distGold < 0.02) {
+                    return { mode: "TUNED (STABLE)", color: "#d4af37", amp: 0.2, phase: Math.PI };
+                } else {
+                    return { mode: "NORMAL", color: "#00ff88", amp: 1.0, phase: Math.PI/2 };
+                }
+            }
+
+            function project(x, y, z) {
+                let x1 = x * Math.cos(angleY) - z * Math.sin(angleY);
+                let z1 = x * Math.sin(angleY) + z * Math.cos(angleY);
+                let y2 = y * Math.cos(angleX) - z1 * Math.sin(angleX);
+                let z2 = y * Math.sin(angleX) + z1 * Math.cos(angleX);
+
+                let depth = z2 + 7; 
+                if(depth < 0.1) depth = 0.1;
+                let scale = 900 / depth;
+
+                return { x: width/2 + x1*scale, y: height/2 + y2*scale };
+            }
+
+            function animate() {
+                time += 0.2; 
+                let phys = getPhysics(throat);
+                
+                let st = document.getElementById('status-text');
+                st.innerText = phys.mode;
+                st.style.color = phys.color;
+
+                ctx.fillStyle = "black";
+                ctx.fillRect(0, 0, width, height);
+
+                let segments = 60; 
+                let radius = 2.5; 
+                let twistAngle = 2 * Math.acos(Math.min(throat, 0.99));
+                let half = twistAngle / 2;
+
+                let topPoints = [];
+                let bottomPoints = [];
+                let midPoints = [];
+
+                // CALCULATE GEOMETRY
+                for(let i=0; i<=segments; i++) {
+                    let theta = (i/segments)*Math.PI*2;
+                    let bx = Math.cos(theta+half)*radius;
+                    let by = Math.sin(theta+half)*radius;
+                    let rx = Math.cos(theta-half)*radius;
+                    let ry = Math.sin(theta-half)*radius;
+
+                    let shake = (tension/100) * 0.2 * phys.amp;
+                    let bShakeX = Math.sin(time + i) * shake;
+                    let bShakeY = Math.cos(time + i) * shake;
+                    let rShakeX = Math.sin(time + i + phys.phase) * shake;
+                    let rShakeY = Math.cos(time + i + phys.phase) * shake;
+
+                    let p1 = {x: bx+bShakeX, y: by+bShakeY, z: 2.5};
+                    let p2 = {x: rx+rShakeX, y: ry+rShakeY, z: -2.5};
+                    let pm = {x: (p1.x+p2.x)/2, y: (p1.y+p2.y)/2, z: 0};
+
+                    topPoints.push(p1);
+                    bottomPoints.push(p2);
+                    midPoints.push(pm);
+
+                    // Draw Rays (Faint)
+                    let start = project(p1.x, p1.y, p1.z);
+                    let end = project(p2.x, p2.y, p2.z);
+                    ctx.globalAlpha = 0.15;
+                    ctx.beginPath(); ctx.moveTo(start.x, start.y); ctx.lineTo(end.x, end.y);
+                    ctx.strokeStyle = (tension>75) ? '#ff4444' : '#ffffff';
+                    ctx.stroke(); ctx.globalAlpha = 1.0;
+                }
+
+                // DRAW PHOTONS
+                // We update and draw photons here so they ride the CURRENT wave state
+                for(let k=photons.length-1; k>=0; k--) {
+                    let p = photons[k];
+                    p.z -= 0.1; // Move down
+                    
+                    // Kill if out of bounds
+                    if(p.z < -2.5) {
+                        photons.splice(k, 1);
+                        continue;
+                    }
+
+                    // Calculate position on the specific Ray (index 0 for now)
+                    // We need to interpolate between TopPoint[0] and BottomPoint[0]
+                    // based on current Z
+                    
+                    // Normalize Z (-2.5 to 2.5) to t (0 to 1)
+                    // Z=2.5 -> t=0. Z=-2.5 -> t=1.
+                    let t = (2.5 - p.z) / 5.0;
+                    
+                    // Get the vibrating endpoints for Ray #0
+                    let start3d = topPoints[0];
+                    let end3d = bottomPoints[0];
+                    
+                    // Interpolate X and Y
+                    let curX = start3d.x + (end3d.x - start3d.x) * t;
+                    let curY = start3d.y + (end3d.y - start3d.y) * t;
+                    
+                    // Store trail
+                    p.trail.push({x: curX, y: curY, z: p.z});
+                    if(p.trail.length > 20) p.trail.shift();
+
+                    // Draw Trail
+                    ctx.beginPath();
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = 2;
+                    for(let tr=0; tr<p.trail.length; tr++) {
+                        let pt = p.trail[tr];
+                        let proj = project(pt.x, pt.y, pt.z);
+                        if(tr===0) ctx.moveTo(proj.x, proj.y);
+                        else ctx.lineTo(proj.x, proj.y);
+                    }
+                    ctx.stroke();
+
+                    // Draw Head
+                    let head = project(curX, curY, p.z);
+                    ctx.fillStyle = "#ffffff";
+                    ctx.beginPath(); ctx.arc(head.x, head.y, 4, 0, Math.PI*2); ctx.fill();
+                    
+                    // Glow
+                    ctx.shadowBlur = 10; ctx.shadowColor = "white";
+                    ctx.fill(); ctx.shadowBlur = 0;
+                }
+
+                // DRAW RINGS (Visual Guide)
+                function drawRing(pts, col, w) {
+                    ctx.beginPath(); ctx.strokeStyle = col; ctx.lineWidth = w;
+                    for(let i=0; i<pts.length; i++) {
+                        let p = project(pts[i].x, pts[i].y, pts[i].z);
+                        if(i===0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+                    }
+                    ctx.stroke();
+                }
+                drawRing(topPoints, '#0088ff', 2);
+                drawRing(bottomPoints, '#ff3333', 2);
+                drawRing(midPoints, '#d4af37', 4);
+
+                requestAnimationFrame(animate);
+            }
+
+            // CONTROLS
+            const sAp = document.getElementById('aperture-slider');
+            const sTen = document.getElementById('tension-slider');
+            const disp = document.getElementById('ratio-display');
+            const btnLock = document.getElementById('btn-lock');
+            const btnFire = document.getElementById('btn-fire');
+
+            sAp.addEventListener('input', e => {
+                throat = parseInt(e.target.value) / 100;
+                disp.innerText = throat.toFixed(2);
+            });
+            sTen.addEventListener('input', e => {
+                tension = parseInt(e.target.value);
+            });
+            btnLock.addEventListener('click', () => {
+                throat = GOLDEN_RATIO;
+                sAp.value = 62;
+                disp.innerText = throat.toFixed(5);
+            });
+            btnFire.addEventListener('click', () => {
+                // Spawn a photon at Z=2.5
+                photons.push({ z: 2.5, trail: [] });
+            });
+
+            animate();
+        });
+    </script>
+</body>
+</html>

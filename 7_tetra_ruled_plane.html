@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Engine: Lab Controls</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #111; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { width: 100%; height: 100vh; }
+        
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #00ff00;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            pointer-events: none;
+            z-index: 10;
+        }
+        .status-tuned { color: #00ff00; font-weight: bold; text-shadow: 0 0 5px #00ff00; }
+        .status-untuned { color: #555; }
+        .label { font-size: 12px; color: #aaa; margin-bottom: 5px; }
+        .value { font-size: 18px; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        <div class="label">ENGINE STATUS</div>
+        <div id="status-text" class="value status-untuned">INITIALIZING...</div>
+        <hr style="border-color: #333;">
+        <div class="label">HEIGHT (2h)</div>
+        <div id="height-val" class="value">0.00</div>
+        <div class="label">THROAT RATIO</div>
+        <div id="ratio-val" class="value">0.00</div>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dat-gui/0.7.9/dat.gui.min.js"></script>
+
+    <script type="x-shader/x-vertex" id="vertexShader">
+        uniform float uHeight;
+        uniform float uRadius;
+        varying vec2 vUv;
+        varying float vElevation;
+
+        void main() {
+            vUv = uv;
+            float t = uv.x * 2.0 - 1.0; 
+            float s = uv.y;
+
+            vec3 topPos = vec3(t * uRadius, uHeight, 0.0);
+            vec3 botPos = vec3(0.0, -uHeight, t * uRadius);
+
+            vec3 pos = mix(topPos, botPos, s);
+            vElevation = pos.y;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(pos, 1.0);
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fragmentShader">
+        uniform float uHeight;
+        varying vec2 vUv;
+        varying float vElevation;
+
+        void main() {
+            vec3 colorTop = vec3(1.0, 0.0, 0.0); 
+            vec3 colorBot = vec3(0.0, 0.0, 1.0); 
+            
+            float mixFactor = (vElevation + uHeight) / (2.0 * uHeight);
+            vec3 finalColor = mix(colorBot, colorTop, mixFactor);
+
+            float gridSize = 20.0; 
+            float lineX = step(0.95, fract(vUv.x * gridSize)); 
+            float lineY = step(0.95, fract(vUv.y * gridSize)); 
+            float grid = max(lineX, lineY);
+
+            vec3 pixelColor = mix(finalColor * 0.2, vec3(1.0), grid);
+            float alpha = 0.15 + (grid * 0.5); 
+
+            gl_FragColor = vec4(pixelColor, alpha);
+        }
+    </script>
+
+    <script>
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111111);
+        
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.z = 5;
+        camera.position.y = 2;
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        const engineGroup = new THREE.Group();
+        scene.add(engineGroup);
+
+        // --- GEOMETRY ---
+        const slitGeometry = new THREE.BoxGeometry(2.5, 0.05, 0.05);
+        const redSlit = new THREE.Mesh(slitGeometry, new THREE.MeshBasicMaterial({ color: 0xff0000 }));
+        const blueSlit = new THREE.Mesh(slitGeometry, new THREE.MeshBasicMaterial({ color: 0x0000ff }));
+        blueSlit.rotation.y = Math.PI / 2;
+        engineGroup.add(redSlit);
+        engineGroup.add(blueSlit);
+
+        const ringGeometry = new THREE.TorusGeometry(0.88, 0.02, 16, 100); 
+        const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xffd700 });
+        const goldRing = new THREE.Mesh(ringGeometry, ringMaterial);
+        goldRing.rotation.x = Math.PI / 2;
+        engineGroup.add(goldRing);
+
+        const geometry = new THREE.PlaneGeometry(1, 1, 40, 40); 
+        const shaderMaterial = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('fragmentShader').textContent,
+            uniforms: { uHeight: { value: 1.25 }, uRadius: { value: 1.25 } },
+            side: THREE.DoubleSide, transparent: true, depthWrite: false
+        });
+        const manifold = new THREE.Mesh(geometry, shaderMaterial);
+        engineGroup.add(manifold);
+
+        const hullGeometry = new THREE.BufferGeometry();
+        const hullPositions = new Float32Array(8 * 3); 
+        hullGeometry.setAttribute('position', new THREE.BufferAttribute(hullPositions, 3));
+        const hullMaterial = new THREE.LineBasicMaterial({ color: 0x444444, opacity: 0.5, transparent: true });
+        const hullLines = new THREE.LineSegments(hullGeometry, hullMaterial);
+        engineGroup.add(hullLines);
+
+        // --- CONTROLS SETUP ---
+        const params = {
+            height: 1.25,        // Current Half-Height (h)
+            autoRun: true,       // Toggle Animation
+            rotationSpeed: 0.005 // Spin Speed
+        };
+
+        const gui = new dat.GUI();
+        gui.add(params, 'autoRun').name('Auto Oscillate');
+        // Range from 0.1 to 2.5
+        const hControl = gui.add(params, 'height', 0.1, 2.5).name('Slit Height (h)').listen();
+        gui.add(params, 'rotationSpeed', 0.0, 0.05).name('Spin Speed');
+
+        // --- ANIMATION LOOP ---
+        let frame = 0;
+        const radius = 1.25; 
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Handle Auto-Run Logic
+            if (params.autoRun) {
+                frame += 0.02;
+                // Oscillate between 0.5 and 2.0
+                params.height = 1.25 + 0.75 * Math.sin(frame);
+            }
+
+            // 2. Apply Spin
+            engineGroup.rotation.y += params.rotationSpeed;
+
+            // 3. Update Visuals based on current params.height
+            const h = params.height;
+            
+            redSlit.position.y = h;
+            blueSlit.position.y = -h;
+            manifold.material.uniforms.uHeight.value = h;
+
+            // Update Hull
+            const posAttr = hullLines.geometry.attributes.position;
+            const r = radius;
+            // Top: (+r, h, 0), (-r, h, 0) | Bot: (0, -h, +r), (0, -h, -r)
+            const T1 = [ r,  h,  0]; const T2 = [-r,  h,  0];
+            const B1 = [ 0, -h,  r]; const B2 = [ 0, -h, -r];
+
+            // T1->B1, T1->B2, T2->B1, T2->B2
+            posAttr.setXYZ(0, ...T1); posAttr.setXYZ(1, ...B1);
+            posAttr.setXYZ(2, ...T1); posAttr.setXYZ(3, ...B2);
+            posAttr.setXYZ(4, ...T2); posAttr.setXYZ(5, ...B1);
+            posAttr.setXYZ(6, ...T2); posAttr.setXYZ(7, ...B2);
+            posAttr.needsUpdate = true;
+
+            // 4. HUD Logic
+            const currentRatio = h / radius;
+            // Loosen tolerance slightly for manual tuning comfort
+            const isTuned = (currentRatio > 0.61 && currentRatio < 0.63);
+
+            document.getElementById('height-val').innerText = (h * 2).toFixed(2);
+            document.getElementById('ratio-val').innerText = currentRatio.toFixed(3);
+
+            const statusEl = document.getElementById('status-text');
+            if (isTuned) {
+                statusEl.innerText = "[ RESONANCE LOCKED ]";
+                statusEl.className = "value status-tuned";
+                goldRing.material.color.setHex(0xffd700);
+                goldRing.scale.set(1.1, 1.1, 1.1);
+                hullLines.material.color.setHex(0xffffff); 
+            } else {
+                statusEl.innerText = "SEARCHING...";
+                statusEl.className = "value status-untuned";
+                goldRing.material.color.setHex(0x444444);
+                goldRing.scale.set(1, 1, 1);
+                hullLines.material.color.setHex(0x444444); 
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>

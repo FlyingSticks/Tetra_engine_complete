@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Depth Scanner</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        .controls { 
+            position: absolute; top: 10px; left: 10px; z-index: 100; 
+            background: rgba(20, 20, 20, 0.9); padding: 15px; 
+            border: 1px solid #555; width: 320px;
+            border-radius: 8px;
+        }
+        .controls h3 { margin-top: 0; color: #ff9900; border-bottom: 1px solid #555; padding-bottom: 5px;}
+        .data-panel {
+            background: rgba(0,0,0,0.5); padding: 10px; margin-bottom: 15px; border: 1px solid #333;
+        }
+        .data-row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 13px; color: #aaa; }
+        .data-val { color: #fff; font-weight: bold; font-family: monospace; }
+        .highlight { color: #00e5ff; }
+        
+        .control-group { margin-bottom: 10px; }
+        .control-group label { display: block; font-size: 12px; margin-bottom: 5px; color: #ccc; }
+        .control-group input { width: 100%; }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <h3>Active Depth Scanner</h3>
+    
+    <div class="data-panel">
+        <div class="data-row">
+            <span>Target Depth (Z):</span>
+            <span id="disp-z" class="data-val highlight">0</span>
+        </div>
+        <div class="data-row">
+            <span>Sensor Image Size:</span>
+            <span id="disp-size" class="data-val">0 x 0</span>
+        </div>
+        <div class="data-row" style="border-top:1px solid #444; padding-top:5px; margin-top:5px;">
+            <span style="color:#ff9900">ASPECT RATIO (W/H):</span>
+            <span id="disp-ar" class="data-val highlight" style="font-size:16px;">0.00</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>Move Target Object (Z-Plane)</label>
+        <input type="range" id="slider-obj" min="-200" max="600" value="0" step="1">
+    </div>
+
+    <div style="margin-top:20px; font-size:11px; color:#555; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid #333; margin-bottom:10px;">Calibration (Fixed Rig)</div>
+
+    <div class="control-group">
+        <label>Vertical Slit Position</label>
+        <input type="range" id="slider-v" min="50" max="400" value="100" step="1">
+    </div>
+    <div class="control-group">
+        <label>Horizontal Slit Position</label>
+        <input type="range" id="slider-h" min="50" max="400" value="200" step="1">
+    </div>
+    <div class="control-group">
+        <label>Sensor/Screen Position</label>
+        <input type="range" id="slider-s" min="200" max="800" value="400" step="1">
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    // --- SETUP ---
+    // The Object is a perfect square (size 40x40) centered at (0,0)
+    const OBJ_SIZE = 40; 
+    
+    const sliderObj = document.getElementById('slider-obj');
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const sliderS = document.getElementById('slider-s');
+
+    const dispZ = document.getElementById('disp-z');
+    const dispSize = document.getElementById('disp-size');
+    const dispAR = document.getElementById('disp-ar');
+
+    // Helper: Create a wireframe rectangle
+    function makeRect(z, w, h, color, name, dashed=false) {
+        const x = [-w/2, w/2, w/2, -w/2, -w/2];
+        const y = [h/2, h/2, -h/2, -h/2, h/2];
+        const z_arr = [z, z, z, z, z];
+        
+        return {
+            x: x, y: y, z: z_arr,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: color, width: dashed ? 2 : 5, dash: dashed ? 'dash' : 'solid' },
+            hoverinfo: 'name', name: name
+        };
+    }
+
+    function updatePlot() {
+        // 1. Read Inputs
+        const z_obj = parseFloat(sliderObj.value);
+        const z_slit_v = parseFloat(sliderV.value);
+        const z_slit_h = parseFloat(sliderH.value);
+        const z_sensor = parseFloat(sliderS.value);
+
+        // 2. Calculate Projection (The Math)
+        // We project the 4 corners of the object square onto the sensor
+        // Corner 1: (w/2, h/2)
+        const x0 = OBJ_SIZE/2;
+        const y0 = OBJ_SIZE/2;
+
+        // Slopes for top-right corner ray
+        // Ray must pass through x=0 at z_slit_v
+        const mx = -x0 / (z_slit_v - z_obj);
+        // Ray must pass through y=0 at z_slit_h
+        const my = -y0 / (z_slit_h - z_obj);
+
+        // Landing point on Sensor
+        const x_sensor = x0 + mx * (z_sensor - z_obj);
+        const y_sensor = y0 + my * (z_sensor - z_obj);
+
+        // The projected image width/height is just 2 * abs(landing coords)
+        // (Because it's symmetric around 0,0)
+        const w_proj = Math.abs(x_sensor * 2);
+        const h_proj = Math.abs(y_sensor * 2);
+        const ar = w_proj / h_proj;
+
+        // Update Dashboard
+        dispZ.innerText = z_obj;
+        dispSize.innerText = `${w_proj.toFixed(1)} x ${h_proj.toFixed(1)}`;
+        dispAR.innerText = isFinite(ar) ? ar.toFixed(3) : "INF";
+
+        // 3. Generate Rays (Visuals)
+        // We draw 4 rays from the 4 corners of the object
+        let ray_x = [], ray_y = [], ray_z = [];
+        
+        const corners = [
+            {x: x0, y: y0},   // TR
+            {x: -x0, y: y0},  // TL
+            {x: -x0, y: -y0}, // BL
+            {x: x0, y: -y0}   // BR
+        ];
+
+        corners.forEach(c => {
+            // Recalculate slopes for each corner
+            let m_cx = -c.x / (z_slit_v - z_obj);
+            let m_cy = -c.y / (z_slit_h - z_obj);
+            
+            // Full path from Object to Sensor
+            // Stops: Object -> Slit V -> Slit H -> Sensor
+            // We verify order based on Z to draw clean lines
+            let p1 = {x: c.x, y: c.y, z: z_obj};
+            let p2 = {x: 0, y: c.y + m_cy*(z_slit_v - z_obj), z: z_slit_v};
+            let p3 = {x: c.x + m_cx*(z_slit_h - z_obj), y: 0, z: z_slit_h};
+            let p4 = {x: c.x + m_cx*(z_sensor - z_obj), y: c.y + m_cy*(z_sensor - z_obj), z: z_sensor};
+
+            let path = [p1, p2, p3, p4].sort((a,b) => a.z - b.z);
+            
+            path.forEach(p => { ray_x.push(p.x); ray_y.push(p.y); ray_z.push(p.z); });
+            ray_x.push(null); ray_y.push(null); ray_z.push(null);
+        });
+
+        const traceRays = {
+            x: ray_x, y: ray_y, z: ray_z,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: 'orange', width: 2, opacity: 0.6 },
+            name: 'Projection Rays', hoverinfo: 'none'
+        };
+
+        // 4. Generate Objects
+        // The Object (Red Square)
+        const traceObj = makeRect(z_obj, OBJ_SIZE, OBJ_SIZE, 'red', 'Target Object');
+        
+        // Vertical Slit (Blue)
+        const traceSlitV = {
+            x:[0,0], y:[-80,80], z:[z_slit_v, z_slit_v],
+            mode:'lines', line: {color:'cyan', width:8}, type:'scatter3d'
+        };
+
+        // Horizontal Slit (Green)
+        const traceSlitH = {
+            x:[-80,80], y:[0,0], z:[z_slit_h, z_slit_h],
+            mode:'lines', line: {color:'lime', width:8}, type:'scatter3d'
+        };
+
+        // The Sensor Image (White Rectangle)
+        const traceSensorImage = makeRect(z_sensor, w_proj, h_proj, 'white', 'Sensor Image');
+        
+        // The Sensor Frame (Static Reference)
+        const traceSensorFrame = makeRect(z_sensor, 200, 200, '#333', 'Sensor Plane', true);
+
+        // 5. Plot
+        const data = [traceRays, traceObj, traceSlitV, traceSlitH, traceSensorImage, traceSensorFrame];
+        
+        const layout = {
+            scene: {
+                xaxis: {visible: false},
+                yaxis: {visible: false},
+                zaxis: {title: 'Depth (Z)', range: [-200, 800], gridcolor: '#333'},
+                aspectmode: 'data',
+                camera: { eye: {x: 2.0, y: 0.5, z: 0.5} }, // Side view
+                bgcolor: '#000'
+            },
+            margin: {l:0, r:0, b:0, t:0},
+            paper_bgcolor: '#000',
+            showlegend: false
+        };
+
+        Plotly.react('visualization', data, layout);
+    }
+
+    // Listeners
+    sliderObj.addEventListener('input', updatePlot);
+    sliderV.addEventListener('input', updatePlot);
+    sliderH.addEventListener('input', updatePlot);
+    sliderS.addEventListener('input', updatePlot);
+
+    updatePlot();
+
+</script>
+</body>
+</html>

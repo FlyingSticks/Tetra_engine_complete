@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Wireframe Mode</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        .controls { 
+            position: absolute; top: 10px; left: 10px; z-index: 100; 
+            background: rgba(20, 20, 20, 0.9); padding: 15px; 
+            border: 1px solid #555; width: 300px;
+        }
+        .controls h3 { margin-top: 0; color: #00e5ff; border-bottom: 1px solid #555; padding-bottom: 5px;}
+        .control-group { margin-bottom: 10px; }
+        .control-group label { display: block; font-size: 12px; margin-bottom: 5px; color: #ccc; }
+        .control-group input { width: 100%; }
+        .value-display { float: right; color: #fff; font-weight: bold; }
+        .legend-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; margin-top: 10px; font-size: 11px;}
+        .box { width: 10px; height: 10px; margin-right: 5px; display: inline-block;}
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <h3>Tetrahedral Wireframe</h3>
+    
+    <div class="control-group">
+        <label>Vertical Slit (Blue) Z: <span id="val-v" class="value-display">100</span></label>
+        <input type="range" id="slider-v" min="20" max="350" value="100" step="1">
+    </div>
+
+    <div class="control-group">
+        <label>Horizontal Slit (Green) Z: <span id="val-h" class="value-display">300</span></label>
+        <input type="range" id="slider-h" min="20" max="350" value="300" step="1">
+    </div>
+
+    <div class="control-group">
+        <label>Screen Position Z: <span id="val-s" class="value-display">200</span></label>
+        <input type="range" id="slider-s" min="10" max="600" value="200" step="1">
+    </div>
+
+    <div class="legend-grid">
+        <div><div class="box" style="background:red;"></div>Top-Right</div>
+        <div><div class="box" style="background:green;"></div>Top-Left</div>
+        <div><div class="box" style="background:yellow;"></div>Btm-Right</div>
+        <div><div class="box" style="background:blue;"></div>Btm-Left</div>
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    // --- SETUP ---
+    const z_source = 0;
+    const grid_range = 30;   
+    const grid_steps = 6; 
+
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const sliderS = document.getElementById('slider-s');
+    const valV = document.getElementById('val-v');
+    const valH = document.getElementById('val-h');
+    const valS = document.getElementById('val-s');
+
+    // Helper: Generate linear space
+    function linspace(start, end, n) {
+        const arr = [];
+        const step = (end - start) / (n - 1);
+        for (let i = 0; i < n; i++) arr.push(start + (step * i));
+        return arr;
+    }
+
+    const xs = linspace(-grid_range, grid_range, grid_steps);
+    const ys = linspace(-grid_range, grid_range, grid_steps);
+
+    function getColor(x, y) {
+        if (x >= 0 && y >= 0) return 'red';    
+        if (x < 0 && y >= 0) return 'green';   
+        if (x >= 0 && y < 0) return 'yellow';  
+        if (x < 0 && y < 0) return 'blue';     
+        return 'white';
+    }
+
+    // Helper to draw a rectangle wireframe using LINES (Scatter3D) instead of Mesh
+    function makeWireframeRect(x_center, y_center, z, width, height, color, name) {
+        const half_w = width / 2;
+        const half_h = height / 2;
+        // 5 points to close the loop: TL -> TR -> BR -> BL -> TL
+        const x = [x_center - half_w, x_center + half_w, x_center + half_w, x_center - half_w, x_center - half_w];
+        const y = [y_center + half_h, y_center + half_h, y_center - half_h, y_center - half_h, y_center + half_h];
+        const z_arr = [z, z, z, z, z];
+        
+        return {
+            x: x, y: y, z: z_arr,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: color, width: 5 },
+            hoverinfo: 'none', name: name
+        };
+    }
+
+    function updatePlot() {
+        const z_slit_v = parseFloat(sliderV.value);
+        const z_slit_h = parseFloat(sliderH.value);
+        const z_screen = parseFloat(sliderS.value);
+
+        valV.innerText = z_slit_v;
+        valH.innerText = z_slit_h;
+        valS.innerText = z_screen;
+
+        // Trace Containers
+        let traces = {};
+        ['red', 'green', 'yellow', 'blue'].forEach(c => {
+            traces[c] = { x: [], y: [], z: [] };
+        });
+
+        let screenPts = { x:[], y:[], z:[], color:[] };
+
+        // Ray Calculation
+        for (let i = 0; i < xs.length; i++) {
+            for (let j = 0; j < ys.length; j++) {
+                let x0 = xs[i];
+                let y0 = ys[j];
+                let color = getColor(x0, y0);
+
+                let denom_v = (z_slit_v - z_source) || 0.1;
+                let denom_h = (z_slit_h - z_source) || 0.1;
+                let mx = -x0 / denom_v;
+                let my = -y0 / denom_h;
+
+                let x_end = x0 + mx * (z_screen - z_source);
+                let y_end = y0 + my * (z_screen - z_source);
+
+                screenPts.x.push(x_end);
+                screenPts.y.push(y_end);
+                screenPts.z.push(z_screen);
+                screenPts.color.push(color);
+
+                // Full Path (for visualization context)
+                let z_max = 600;
+                let x_max = x0 + mx * z_max;
+                let y_max = y0 + my * z_max;
+
+                let p1 = { x: x0, y: y0, z: z_source };
+                let p2 = { x: 0,  y: y0 + my*(z_slit_v-z_source), z: z_slit_v }; 
+                let p3 = { x: x0 + mx*(z_slit_h-z_source), y: 0, z: z_slit_h };
+                let p_end = { x: x_max, y: y_max, z: z_max };
+
+                let path = [p1, p2, p3, p_end].sort((a,b) => a.z - b.z);
+
+                path.forEach(p => {
+                    traces[color].x.push(p.x);
+                    traces[color].y.push(p.y);
+                    traces[color].z.push(p.z);
+                });
+                // Add null to break line
+                traces[color].x.push(null);
+                traces[color].y.push(null);
+                traces[color].z.push(null);
+            }
+        }
+
+        let data = [];
+
+        // 1. Rays
+        ['red', 'green', 'yellow', 'blue'].forEach(c => {
+            data.push({
+                x: traces[c].x, y: traces[c].y, z: traces[c].z,
+                mode: 'lines', type: 'scatter3d',
+                line: { color: c, width: 3 },
+                hoverinfo: 'none', opacity: 0.5, name: c
+            });
+        });
+
+        // 2. Dots on Screen
+        data.push({
+            x: screenPts.x, y: screenPts.y, z: screenPts.z,
+            mode: 'markers', type: 'scatter3d',
+            marker: { color: screenPts.color, size: 4, symbol: 'square' },
+            name: 'Image'
+        });
+
+        // 3. Wireframe Objects (NO MESHES)
+        
+        // Vertical Slit (Blue)
+        data.push(makeWireframeRect(0, 0, z_slit_v, 140, 140, 'rgba(50,50,255,0.5)', 'V-Barrier'));
+        // The Slit Opening
+        data.push({
+            x:[0,0], y:[-60,60], z:[z_slit_v, z_slit_v],
+            mode:'lines', line: {color:'cyan', width:8}, type:'scatter3d'
+        });
+
+        // Horizontal Slit (Green)
+        data.push(makeWireframeRect(0, 0, z_slit_h, 140, 140, 'rgba(50,255,50,0.5)', 'H-Barrier'));
+        // The Slit Opening
+        data.push({
+            x:[-60,60], y:[0,0], z:[z_slit_h, z_slit_h],
+            mode:'lines', line: {color:'lime', width:8}, type:'scatter3d'
+        });
+
+        // Screen (White Frame)
+        let s_r = grid_range * (1 + z_screen/100);
+        data.push(makeWireframeRect(0, 0, z_screen, s_r*2, s_r*2, 'white', 'Screen'));
+
+        const layout = {
+            scene: {
+                xaxis: {visible: false},
+                yaxis: {visible: false},
+                zaxis: {title: 'Depth', range: [0, 600], gridcolor: '#333'},
+                aspectmode: 'data',
+                camera: { eye: {x: 1.8, y: 0.8, z: 0.8} },
+                bgcolor: '#000'
+            },
+            margin: {l:0, r:0, b:0, t:0},
+            paper_bgcolor: '#000',
+            showlegend: false
+        };
+
+        Plotly.react('visualization', data, layout);
+    }
+
+    sliderV.addEventListener('input', updatePlot);
+    sliderH.addEventListener('input', updatePlot);
+    sliderS.addEventListener('input', updatePlot);
+
+    updatePlot();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Interactive Tetrahedral Engine</title>
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; color: white; font-family: sans-serif; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        
+        /* Control Panel Styling */
+        .controls { 
+            position: absolute; 
+            top: 10px; left: 10px; 
+            z-index: 100; 
+            background: rgba(0, 0, 0, 0.8); 
+            padding: 15px; 
+            border-radius: 8px; 
+            border: 1px solid #444;
+            width: 280px;
+        }
+        .controls h3 { margin-top: 0; font-size: 16px; color: #ffa500; }
+        .control-group { margin-bottom: 12px; }
+        .control-group label { display: block; font-size: 12px; margin-bottom: 4px; color: #ddd; }
+        .control-group input { width: 100%; cursor: pointer; }
+        .value-display { float: right; color: #00e5ff; font-weight: bold; }
+        
+        /* Legend */
+        .legend { font-size: 11px; color: #aaa; margin-top: 10px; border-top: 1px solid #444; padding-top: 5px; }
+        .dot { height: 8px; width: 8px; display: inline-block; border-radius: 50%; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <h3>Tetrahedral Controls</h3>
+    
+    <div class="control-group">
+        <label>Vertical Slit (Blue) Z: <span id="val-v" class="value-display">100</span></label>
+        <input type="range" id="slider-v" min="20" max="300" value="100" step="1">
+    </div>
+
+    <div class="control-group">
+        <label>Horizontal Slit (Green) Z: <span id="val-h" class="value-display">200</span></label>
+        <input type="range" id="slider-h" min="20" max="300" value="200" step="1">
+    </div>
+
+    <div class="control-group">
+        <label>Screen Distance Z: <span id="val-s" class="value-display">400</span></label>
+        <input type="range" id="slider-s" min="100" max="600" value="400" step="5">
+    </div>
+
+    <div class="legend">
+        <div><span class="dot" style="background:red;"></span>Smartphone Source (Z=0)</div>
+        <div><span class="dot" style="background:blue;"></span>Vertical Slit (Constrains X)</div>
+        <div><span class="dot" style="background:green;"></span>Horizontal Slit (Constrains Y)</div>
+        <div><span class="dot" style="background:orange;"></span>Projected Rays</div>
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    // --- Initial Setup ---
+    const z_source = 0;
+    const grid_range = 40;   
+    const grid_steps = 9;    
+
+    // DOM Elements
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const sliderS = document.getElementById('slider-s');
+    const valV = document.getElementById('val-v');
+    const valH = document.getElementById('val-h');
+    const valS = document.getElementById('val-s');
+
+    // Helper: Generate range of numbers
+    function linspace(start, end, n) {
+        const arr = [];
+        const step = (end - start) / (n - 1);
+        for (let i = 0; i < n; i++) arr.push(start + (step * i));
+        return arr;
+    }
+
+    const xs = linspace(-grid_range, grid_range, grid_steps);
+    const ys = linspace(-grid_range, grid_range, grid_steps);
+
+    // --- Main Calculation & Update Function ---
+    function updatePlot() {
+        // 1. Get current values from sliders
+        const z_slit_v = parseFloat(sliderV.value);
+        const z_slit_h = parseFloat(sliderH.value);
+        const z_screen = parseFloat(sliderS.value);
+
+        // Update Text Displays
+        valV.innerText = z_slit_v;
+        valH.innerText = z_slit_h;
+        valS.innerText = z_screen;
+
+        // 2. Ray Tracing Math
+        let ray_x = [], ray_y = [], ray_z = [];
+
+        for (let i = 0; i < xs.length; i++) {
+            for (let j = 0; j < ys.length; j++) {
+                let x0 = xs[i];
+                let y0 = ys[j];
+
+                // Avoid division by zero if slit is at source (unlikely with min=20)
+                let denom_v = (z_slit_v - z_source) || 0.1;
+                let denom_h = (z_slit_h - z_source) || 0.1;
+
+                // Slopes
+                let mx = -x0 / denom_v;
+                let my = -y0 / denom_h;
+
+                // Landing point
+                let x_end = x0 + mx * (z_screen - z_source);
+                let y_end = y0 + my * (z_screen - z_source);
+
+                // Build Ray Path (Source -> Slit A -> Slit B -> Screen)
+                // We must sort the Z-stops to draw the line correctly regardless of which slit is first
+                let stops = [
+                    {z: z_source, x: x0, y: y0},
+                    {z: z_screen, x: x_end, y: y_end}
+                ];
+
+                // Calculate crossing at Z_slit_v
+                // At z_slit_v, x is forced to 0 (approx), y is determined by slope
+                stops.push({
+                    z: z_slit_v,
+                    x: 0, 
+                    y: y0 + my * (z_slit_v - z_source)
+                });
+
+                // Calculate crossing at Z_slit_h
+                // At z_slit_h, y is forced to 0 (approx), x is determined by slope
+                stops.push({
+                    z: z_slit_h,
+                    x: x0 + mx * (z_slit_h - z_source),
+                    y: 0
+                });
+
+                // Sort points by Z depth so the line draws continuously
+                stops.sort((a, b) => a.z - b.z);
+
+                // Add to trace arrays
+                stops.forEach(p => {
+                    ray_x.push(p.x); ray_y.push(p.y); ray_z.push(p.z);
+                });
+                // Add null to break the line
+                ray_x.push(null); ray_y.push(null); ray_z.push(null);
+            }
+        }
+
+        // 3. Define the Traces
+
+        // RAYS
+        const traceRays = {
+            x: ray_x, y: ray_y, z: ray_z,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: '#ff9900', width: 2, opacity: 0.3 },
+            hoverinfo: 'none', name: 'Rays'
+        };
+
+        // Helper for meshes
+        function makeMesh(x, y, z, color, opacity, name) {
+            return {
+                x: x, y: y, z: z,
+                color: color, opacity: opacity, type: 'mesh3d', name: name,
+                i: [0, 0], j: [1, 2], k: [2, 3]
+            };
+        }
+
+        // SOURCE (Fixed)
+        const traceSource = makeMesh(
+            [-grid_range, grid_range, grid_range, -grid_range],
+            [-grid_range, -grid_range, grid_range, grid_range],
+            [0,0,0,0], 'red', 0.2, 'Source'
+        );
+
+        // SLIT V (Dynamic Z)
+        const traceSlitV = makeMesh(
+            [0, 0, 0, 0], [-60, -60, 60, 60],
+            [z_slit_v, z_slit_v, z_slit_v, z_slit_v], 'blue', 0.5, 'Vertical Slit'
+        );
+
+        // SLIT H (Dynamic Z)
+        const traceSlitH = makeMesh(
+            [-60, -60, 60, 60], [0, 0, 0, 0],
+            [z_slit_h, z_slit_h, z_slit_h, z_slit_h], 'green', 0.5, 'Horizontal Slit'
+        );
+
+        // SCREEN (Dynamic Z and Scale)
+        // Auto-scale screen size slightly based on ray divergence so it looks good
+        let scale = 1 + (z_screen / 100); 
+        let s_r = grid_range * scale;
+        const traceScreen = makeMesh(
+            [-s_r, s_r, s_r, -s_r], [-s_r, -s_r, s_r, s_r],
+            [z_screen, z_screen, z_screen, z_screen], 'lightblue', 0.15, 'Screen'
+        );
+
+        // 4. Update the Plot
+        const data = [traceRays, traceSource, traceSlitV, traceSlitH, traceScreen];
+        
+        const layout = {
+            scene: {
+                xaxis: {title: '', showgrid: false, zeroline: false, showticklabels: false}, // Cleaner look
+                yaxis: {title: '', showgrid: false, zeroline: false, showticklabels: false},
+                zaxis: {title: 'Depth (Z)', titlefont: {color:'white'}},
+                aspectmode: 'data',
+                camera: { eye: {x: 1.8, y: 0.8, z: 0.8} }, // Side view is better for this
+                dragmode: 'orbit'
+            },
+            margin: {l: 0, r: 0, b: 0, t: 0},
+            paper_bgcolor: '#111',
+            showlegend: false
+        };
+
+        // Use 'react' for efficient updates
+        Plotly.react('visualization', data, layout);
+    }
+
+    // --- Event Listeners ---
+    sliderV.addEventListener('input', updatePlot);
+    sliderH.addEventListener('input', updatePlot);
+    sliderS.addEventListener('input', updatePlot);
+
+    // Initial draw
+    updatePlot();
+
+</script>
+
+</body>
+</html>

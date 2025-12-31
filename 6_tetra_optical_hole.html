@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Optical Singularity Simulation</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #111;
+            color: #eee;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0;
+            padding: 20px;
+        }
+        h2 { margin-bottom: 10px; }
+        .container {
+            display: flex;
+            gap: 20px;
+            background: #222;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        canvas {
+            background-color: #000;
+            border: 1px solid #444;
+            cursor: crosshair;
+        }
+        .controls {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            width: 300px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+        }
+        label { font-size: 0.9em; color: #aaa; margin-bottom: 5px; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        .value-display { float: right; color: #fff; font-weight: bold; }
+        .note { font-size: 0.8em; color: #888; margin-top: 20px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+    <h2>Optical Singularity: The "Hole"</h2>
+    
+    <div class="container">
+        <div>
+            <canvas id="simCanvas" width="500" height="500"></canvas>
+            <div style="text-align: center; color: #888; margin-top: 5px;">View through Lens</div>
+        </div>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>Distance to Object (d_obj) <span id="val_d_obj" class="value-display">50</span></label>
+                <input type="range" id="d_obj" min="10" max="200" value="50">
+            </div>
+
+            <div class="control-group">
+                <label>Focal Length Center (f0) <span id="val_f0" class="value-display">36</span></label>
+                <input type="range" id="f0" min="20" max="100" value="36">
+            </div>
+
+            <div class="control-group">
+                <label>Aberration Strength (k) <span id="val_k" class="value-display">0.20</span></label>
+                <input type="range" id="k" min="0" max="0.5" step="0.01" value="0.2">
+            </div>
+
+            <div class="control-group">
+                <label>Checkerboard Density <span id="val_density" class="value-display">10</span></label>
+                <input type="range" id="density" min="2" max="50" value="10">
+            </div>
+
+            <div class="note">
+                <strong>What you are seeing:</strong><br>
+                The ring where the image smears is the <em>Singularity</em> (Caustic). <br><br>
+                Inside the ring: Virtual Upright Image.<br>
+                Outside the ring: Real Inverted Image.<br>
+                On the ring: Magnification = &infin;.
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        
+        // Image Data buffer for fast pixel manipulation
+        const imageData = ctx.createImageData(width, height);
+        const data = imageData.data; // The array of RGBA values
+
+        // Parameters
+        let params = {
+            d_obj: 50.0,
+            d_eye: 100.0,
+            f0: 36.0,
+            k: 0.2,
+            squares: 10
+        };
+
+        // UI Event Listeners
+        function setupListener(id, key, isFloat = true) {
+            const el = document.getElementById(id);
+            const valDisplay = document.getElementById('val_' + id);
+            el.addEventListener('input', () => {
+                params[key] = isFloat ? parseFloat(el.value) : parseInt(el.value);
+                valDisplay.innerText = params[key];
+                requestAnimationFrame(render);
+            });
+        }
+
+        setupListener('d_obj', 'd_obj');
+        setupListener('f0', 'f0');
+        setupListener('k', 'k');
+        setupListener('density', 'squares');
+
+        // The Checkerboard Function (Source Object)
+        function getSourceColor(u, v) {
+            // Map u,v from approx -2..2 space to integer checkerboard indices
+            const checkX = Math.floor(u * params.squares);
+            const checkY = Math.floor(v * params.squares);
+            
+            // Simple XOR pattern for checkerboard
+            const isWhite = (Math.abs(checkX) + Math.abs(checkY)) % 2 === 0;
+            return isWhite ? 255 : 0; // Return grayscale value
+        }
+
+        function render() {
+            const w = width;
+            const h = height;
+            const hw = w / 2;
+            const hh = h / 2;
+
+            // Loop through every pixel on the canvas
+            for (let py = 0; py < h; py++) {
+                // Normalize Y coordinate (-1 to 1)
+                const y_norm = (py - hh) / hh;
+                
+                for (let px = 0; px < w; px++) {
+                    // Normalize X coordinate (-1 to 1)
+                    const x_norm = (px - hw) / hw;
+
+                    // Calculate Radius squared
+                    const r2 = x_norm*x_norm + y_norm*y_norm;
+
+                    // 1. Circular Aperture Mask
+                    if (r2 > 1.0) {
+                        // Outside lens: Black
+                        const idx = (py * w + px) * 4;
+                        data[idx] = 0;     // R
+                        data[idx+1] = 0;   // G
+                        data[idx+2] = 0;   // B
+                        data[idx+3] = 255; // Alpha
+                        continue;
+                    }
+
+                    // 2. Spherical Aberration Model
+                    // f_eff decreases as r increases (edges bend light more)
+                    const f_eff = params.f0 * (1 - params.k * r2);
+
+                    // 3. Ray Tracing / Scaling Factor
+                    // scale = 0 means singularity (infinite magnification)
+                    // scale > 0 means virtual, scale < 0 means real
+                    const scale = (1 + params.d_obj/params.d_eye - params.d_obj/f_eff);
+
+                    // 4. Map to Source Object (u, v)
+                    const texture_zoom = 2.0;
+                    const u = x_norm * scale * texture_zoom;
+                    const v = y_norm * scale * texture_zoom;
+
+                    // 5. Sample the "Object"
+                    const color = getSourceColor(u, v);
+
+                    // 6. Write to Pixel
+                    const idx = (py * w + px) * 4;
+                    
+                    // Visualizing the singularity ring with a tint?
+                    // Let's keep it simple grayscale like the python script
+                    
+                    // If scale is very close to zero, it gets noisy/aliased, 
+                    // which naturally looks like the "blur" you described.
+                    
+                    data[idx] = color;     // R
+                    data[idx+1] = color;   // G
+                    data[idx+2] = color;   // B
+                    data[idx+3] = 255;     // Alpha
+                }
+            }
+
+            // Put the image data back onto the canvas
+            ctx.putImageData(imageData, 0, 0);
+            
+            // Draw a red circle around the lens boundary for style
+            ctx.beginPath();
+            ctx.arc(hw, hh, hw-1, 0, 2 * Math.PI);
+            ctx.strokeStyle = '#333';
+            ctx.stroke();
+        }
+
+        // Initial Render
+        render();
+
+    </script>
+</body>
+</html>

@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Light Field (Ruled Surface)</title>
+    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        .controls { 
+            position: absolute; top: 10px; left: 10px; z-index: 100; 
+            background: rgba(10, 10, 10, 0.9); padding: 15px; 
+            border: 1px solid #444; width: 320px; border-radius: 8px;
+            box-shadow: 0 0 20px rgba(0,0,0,0.8);
+        }
+        .controls h3 { margin-top: 0; color: #ff9900; border-bottom: 1px solid #555; padding-bottom: 5px; letter-spacing: 1px;}
+        
+        .toggle-container { margin: 15px 0; display: flex; align-items: center; background: #222; padding: 10px; border-radius: 5px;}
+        .toggle-container input { margin-right: 10px; transform: scale(1.5); cursor: pointer; }
+        .toggle-label { color: #fff; font-weight: bold; font-size: 14px; cursor: pointer;}
+
+        .data-panel { background: rgba(0,0,0,0.5); padding: 10px; margin-bottom: 15px; border: 1px solid #333; }
+        .data-row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 13px; color: #aaa; }
+        .data-val { color: #fff; font-weight: bold; font-family: monospace; }
+        
+        .control-group { margin-bottom: 10px; }
+        .control-group label { display: block; font-size: 11px; margin-bottom: 5px; color: #888; text-transform: uppercase;}
+        .control-group input { width: 100%; cursor: ew-resize; }
+    </style>
+</head>
+<body>
+
+<div class="controls">
+    <h3>Tetrahedral Engine</h3>
+    
+    <div class="toggle-container">
+        <input type="checkbox" id="chk-surface">
+        <label for="chk-surface" class="toggle-label">Show High-Density Field</label>
+    </div>
+
+    <div class="data-panel">
+        <div class="data-row">
+            <span>Target Depth (Z):</span><span id="disp-z" class="data-val">0</span>
+        </div>
+        <div class="data-row">
+            <span>Aspect Ratio:</span><span id="disp-ar" class="data-val" style="color:#00e5ff">0.00</span>
+        </div>
+    </div>
+
+    <div class="control-group">
+        <label>Object Z-Position</label>
+        <input type="range" id="slider-obj" min="-100" max="600" value="0" step="1">
+    </div>
+    <div class="control-group">
+        <label>Vertical Slit (Blue)</label>
+        <input type="range" id="slider-v" min="50" max="400" value="100" step="1">
+    </div>
+    <div class="control-group">
+        <label>Horizontal Slit (Green)</label>
+        <input type="range" id="slider-h" min="50" max="400" value="200" step="1">
+    </div>
+    <div class="control-group">
+        <label>Sensor Position (White)</label>
+        <input type="range" id="slider-s" min="200" max="800" value="400" step="1">
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    const OBJ_SIZE = 40; 
+    
+    // UI Elements
+    const sliderObj = document.getElementById('slider-obj');
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const sliderS = document.getElementById('slider-s');
+    const chkSurface = document.getElementById('chk-surface');
+    const dispZ = document.getElementById('disp-z');
+    const dispAR = document.getElementById('disp-ar');
+
+    // --- NEW: Create a Display for the "Solved" Depth ---
+    const dataPanel = document.querySelector('.data-panel');
+    const newRow = document.createElement('div');
+    newRow.className = 'data-row';
+    newRow.innerHTML = '<span>Calculated Depth:</span><span id="disp-calc" class="data-val" style="color:#00ff00">0</span>';
+    dataPanel.appendChild(newRow);
+    const dispCalc = document.getElementById('disp-calc');
+
+    function getTestPatternPoints(z, size) {
+        let x = [], y = [], z_arr = [];
+        // Circle
+        let steps = 40; let r = size * 0.35;
+        for (let i = 0; i <= steps; i++) {
+            let theta = (i / steps) * 2 * Math.PI;
+            x.push(r * Math.cos(theta)); y.push(r * Math.sin(theta)); z_arr.push(z);
+        }
+        x.push(null); y.push(null); z_arr.push(null);
+        // Grid
+        let grid_steps = 2; let step_size = size / grid_steps; let half = size / 2;
+        for(let ix = -half; ix <= half; ix += step_size){
+            x.push(ix); y.push(-half); z_arr.push(z);
+            x.push(ix); y.push(half); z_arr.push(z);
+            x.push(null); y.push(null); z_arr.push(null);
+        }
+        for(let iy = -half; iy <= half; iy += step_size){
+            x.push(-half); y.push(iy); z_arr.push(z);
+            x.push(half); y.push(iy); z_arr.push(z);
+            x.push(null); y.push(null); z_arr.push(null);
+        }
+        return {x, y, z: z_arr};
+    }
+
+    function projectPoints(points, z_obj, z_v, z_h, z_target) {
+        let px = [], py = [], pz = [];
+        for(let i=0; i<points.x.length; i++){
+            if(points.x[i] === null) { px.push(null); py.push(null); pz.push(null); continue; }
+            let x0 = points.x[i]; let y0 = points.y[i];
+            // Anamorphic Projection Math
+            let mx = -x0 / (z_v - z_obj);
+            let my = -y0 / (z_h - z_obj);
+            px.push(x0 + mx * (z_target - z_obj));
+            py.push(y0 + my * (z_target - z_obj));
+            pz.push(z_target);
+        }
+        return {x: px, y: py, z: pz};
+    }
+
+    // --- THE SOLVER FUNCTION ---
+    function solveDepthFromAR(ar, z_obj, z_v, z_h) {
+        // We know the source is square, so Source AR = 1.
+        // Therefore, Measured AR = Magnification_X / Magnification_Y
+        // Mag_X = (Zv - Zs) / (Zv - Zobj)
+        // Mag_Y = (Zh - Zs) / (Zh - Zobj)
+        
+        // Let K be the constant ratio of the source distances
+        let K = (z_h - z_obj) / (z_v - z_obj);
+        
+        // Algebraically solving for Zs (Sensor/Wall Depth):
+        // AR = K * (Zv - Zs) / (Zh - Zs)
+        // This rearranges to:
+        let Z_s = (z_v - (ar * z_h / K)) / (1 - (ar / K));
+        
+        return Z_s;
+    }
+
+    function updatePlot() {
+        const z_obj = parseFloat(sliderObj.value);
+        const z_v = parseFloat(sliderV.value);
+        const z_h = parseFloat(sliderH.value);
+        const z_s = parseFloat(sliderS.value);
+        const showHighDensity = chkSurface.checked;
+
+        dispZ.innerText = z_obj;
+
+        // 1. Calculate Real Aspect Ratio (Simulating what a camera sees)
+        let x0 = OBJ_SIZE/2; let y0 = OBJ_SIZE/2;
+        let mx = -x0 / (z_v - z_obj);
+        let my = -y0 / (z_h - z_obj);
+        let w_proj = Math.abs((x0 + mx * (z_s - z_obj)) * 2);
+        let h_proj = Math.abs((y0 + my * (z_s - z_obj)) * 2);
+        let ar = w_proj / h_proj;
+        
+        dispAR.innerText = isFinite(ar) ? ar.toFixed(2) : "INF";
+
+        // 2. RUN THE SOLVER
+        // We feed it ONLY the Aspect Ratio and the fixed machine positions.
+        // We do NOT feed it the 'z_s' slider value. It has to guess it.
+        if (isFinite(ar) && ar !== 0) {
+            let calculatedDepth = solveDepthFromAR(ar, z_obj, z_v, z_h);
+            dispCalc.innerText = Math.round(calculatedDepth);
+        } else {
+            dispCalc.innerText = "---";
+        }
+
+        let data = [];
+
+        // Source & Projection Graphics
+        let sourcePattern = getTestPatternPoints(z_obj, OBJ_SIZE);
+        data.push({
+            x: sourcePattern.x, y: sourcePattern.y, z: sourcePattern.z,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: 'red', width: 3 }, hoverinfo: 'none', name: 'Source'
+        });
+
+        let projPattern = projectPoints(sourcePattern, z_obj, z_v, z_h, z_s);
+        data.push({
+            x: projPattern.x, y: projPattern.y, z: projPattern.z,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: 'white', width: 5 }, hoverinfo: 'none', name: 'Projected'
+        });
+
+        // Rays
+        let steps = showHighDensity ? 20 : 1;
+        let half = OBJ_SIZE/2; 
+        // Only draw corners if low density
+        let perimeter = showHighDensity ? 
+            (function(){
+                let p=[]; 
+                for(let i=0; i<steps; i++) p.push({x:-half+(OBJ_SIZE*i/steps), y:half});
+                for(let i=0; i<steps; i++) p.push({x:half, y:half-(OBJ_SIZE*i/steps)});
+                for(let i=0; i<steps; i++) p.push({x:half-(OBJ_SIZE*i/steps), y:-half});
+                for(let i=0; i<steps; i++) p.push({x:-half, y:-half+(OBJ_SIZE*i/steps)});
+                return p;
+            })() : 
+            [{x:half, y:half}, {x:-half, y:half}, {x:-half, y:-half}, {x:half, y:-half}];
+
+        let ray_x=[], ray_y=[], ray_z=[];
+        perimeter.forEach(p => {
+            let m_cx = -p.x / (z_v - z_obj);
+            let m_cy = -p.y / (z_h - z_obj);
+            let p1 = {x:p.x, y:p.y, z:z_obj};
+            let p2 = {x:0, y:p.y + m_cy*(z_v-z_obj), z:z_v};
+            let p3 = {x:p.x + m_cx*(z_h-z_obj), y:0, z:z_h};
+            let p4 = {x:p.x + m_cx*(z_s-z_obj), y:p.y + m_cy*(z_s-z_obj), z:z_s};
+            
+            let path = [p1, p2, p3, p4].sort((a,b)=>a.z - b.z);
+            path.forEach(pt=>{ ray_x.push(pt.x); ray_y.push(pt.y); ray_z.push(pt.z); });
+            ray_x.push(null); ray_y.push(null); ray_z.push(null);
+        });
+
+        data.push({
+            x: ray_x, y: ray_y, z: ray_z,
+            mode: 'lines', type: 'scatter3d',
+            line: { color: showHighDensity ? 'rgba(255, 150, 0, 0.2)' : '#ff9900', width: showHighDensity ? 1 : 4 }, 
+            hoverinfo:'none'
+        });
+
+        // Slits
+        data.push({ x:[0,0], y:[-100,100], z:[z_v, z_v], mode:'lines', line: {color:'cyan', width:8}, type:'scatter3d' });
+        data.push({ x:[-100,100], y:[0,0], z:[z_h, z_h], mode:'lines', line: {color:'lime', width:8}, type:'scatter3d' });
+
+        const layout = {
+            scene: {
+                xaxis: {visible: false}, yaxis: {visible: false},
+                zaxis: {title: 'Depth', range: [-200, 800], gridcolor: '#333'},
+                camera: { eye: {x: 1.8, y: 0.8, z: 0.8} },
+                bgcolor: '#000'
+            },
+            margin: {l:0, r:0, b:0, t:0}, paper_bgcolor: '#000', showlegend: false
+        };
+
+        Plotly.react('visualization', data, layout);
+    }
+
+    sliderObj.addEventListener('input', updatePlot);
+    sliderV.addEventListener('input', updatePlot);
+    sliderH.addEventListener('input', updatePlot);
+    sliderS.addEventListener('input', updatePlot);
+    chkSurface.addEventListener('change', updatePlot);
+
+    updatePlot();
+</script></body>
+</html>
