@@ -1,218 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Tetrahedral Light Field (Ruled Surface)</title>
-    <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
+    <title>My Project Menu</title>
     <style>
-        body { margin: 0; padding: 0; background-color: #000; color: white; font-family: sans-serif; overflow: hidden; }
-        #visualization { width: 100vw; height: 100vh; }
-        .controls { 
-            position: absolute; top: 10px; left: 10px; z-index: 100; 
-            background: rgba(10, 10, 10, 0.9); padding: 15px; 
-            border: 1px solid #444; width: 320px; border-radius: 8px;
-            box-shadow: 0 0 20px rgba(0,0,0,0.8);
-        }
-        .controls h3 { margin-top: 0; color: #ff9900; border-bottom: 1px solid #555; padding-bottom: 5px; letter-spacing: 1px;}
-        
-        .toggle-container { margin: 15px 0; display: flex; align-items: center; background: #222; padding: 10px; border-radius: 5px;}
-        .toggle-container input { margin-right: 10px; transform: scale(1.5); cursor: pointer; }
-        .toggle-label { color: #fff; font-weight: bold; font-size: 14px; cursor: pointer;}
-
-        .data-panel { background: rgba(0,0,0,0.5); padding: 10px; margin-bottom: 15px; border: 1px solid #333; }
-        .data-row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 13px; color: #aaa; }
-        .data-val { color: #fff; font-weight: bold; font-family: monospace; }
-        
-        .control-group { margin-bottom: 10px; }
-        .control-group label { display: block; font-size: 11px; margin-bottom: 5px; color: #888; text-transform: uppercase;}
-        .control-group input { width: 100%; cursor: ew-resize; }
+        body { font-family: sans-serif; padding: 20px; }
+        ul { list-style-type: none; padding: 0; }
+        li { margin: 10px 0; }
+        a { text-decoration: none; color: #0366d6; font-size: 18px; }
+        a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
 
-<div class="controls">
-    <h3>Tetrahedral Engine</h3>
-    
-    <div class="toggle-container">
-        <input type="checkbox" id="chk-surface">
-        <label for="chk-surface" class="toggle-label">Show High-Density Field</label>
-    </div>
+    <h1>Select a File to View</h1>
+    <p>Click any link below to open the specific visualization:</p>
 
-    <div class="data-panel">
-        <div class="data-row">
-            <span>Target Depth (Z):</span><span id="disp-z" class="data-val">0</span>
-        </div>
-        <div class="data-row">
-            <span>Aspect Ratio:</span><span id="disp-ar" class="data-val" style="color:#00e5ff">0.00</span>
-        </div>
-    </div>
+    <ul>
+        <li><a href="1_tetra_engine_base.html">View Page 1</a></li>
+        <li><a href="2_tetra_square_rectangle.html">View Page 2</a></li>
+        <li><a href="3_tetra_big_pixels_color.html">View Experiment A</a></li>
+        <li><a href="4_tetra_dense_line_grid.html">View Data Visualization</a></li>
+        </ul>
 
-    <div class="control-group">
-        <label>Object Z-Position</label>
-        <input type="range" id="slider-obj" min="-100" max="600" value="0" step="1">
-    </div>
-    <div class="control-group">
-        <label>Vertical Slit (Blue)</label>
-        <input type="range" id="slider-v" min="50" max="400" value="100" step="1">
-    </div>
-    <div class="control-group">
-        <label>Horizontal Slit (Green)</label>
-        <input type="range" id="slider-h" min="50" max="400" value="200" step="1">
-    </div>
-    <div class="control-group">
-        <label>Sensor Position (White)</label>
-        <input type="range" id="slider-s" min="200" max="800" value="400" step="1">
-    </div>
-</div>
-
-<div id="visualization"></div>
-
-<script>
-    const OBJ_SIZE = 40; 
-    
-    // UI Elements
-    const sliderObj = document.getElementById('slider-obj');
-    const sliderV = document.getElementById('slider-v');
-    const sliderH = document.getElementById('slider-h');
-    const sliderS = document.getElementById('slider-s');
-    const chkSurface = document.getElementById('chk-surface');
-    const dispZ = document.getElementById('disp-z');
-    const dispAR = document.getElementById('disp-ar');
-
-    // Helper: Generate points along the perimeter of the square
-    function getPerimeterPoints(z, size, steps) {
-        let pts = [];
-        let half = size/2;
-        // Top Edge
-        for(let i=0; i<steps; i++) pts.push({x: -half + (size*i/steps), y: half});
-        // Right Edge
-        for(let i=0; i<steps; i++) pts.push({x: half, y: half - (size*i/steps)});
-        // Bottom Edge
-        for(let i=0; i<steps; i++) pts.push({x: half - (size*i/steps), y: -half});
-        // Left Edge
-        for(let i=0; i<steps; i++) pts.push({x: -half, y: -half + (size*i/steps)});
-        return pts;
-    }
-
-    // Helper to Create a Wireframe Rectangle
-    function makeRect(z, w, h, color, name) {
-        const x = [-w/2, w/2, w/2, -w/2, -w/2];
-        const y = [h/2, h/2, -h/2, -h/2, h/2];
-        const z_arr = [z, z, z, z, z];
-        return {
-            x: x, y: y, z: z_arr,
-            mode: 'lines', type: 'scatter3d',
-            line: { color: color, width: 4 }, hoverinfo: 'none', name: name
-        };
-    }
-
-    function updatePlot() {
-        const z_obj = parseFloat(sliderObj.value);
-        const z_v = parseFloat(sliderV.value);
-        const z_h = parseFloat(sliderH.value);
-        const z_s = parseFloat(sliderS.value);
-        const showHighDensity = chkSurface.checked;
-
-        dispZ.innerText = z_obj;
-
-        // --- MATH (Aspect Ratio) ---
-        let x0 = OBJ_SIZE/2; let y0 = OBJ_SIZE/2;
-        let mx = -x0 / (z_v - z_obj);
-        let my = -y0 / (z_h - z_obj);
-        let w_proj = Math.abs((x0 + mx * (z_s - z_obj)) * 2);
-        let h_proj = Math.abs((y0 + my * (z_s - z_obj)) * 2);
-        let ar = w_proj / h_proj;
-        dispAR.innerText = isFinite(ar) ? ar.toFixed(2) : "INF";
-
-        let data = [];
-
-        // --- RAYS ---
-        // If High Density, we generate 80 rays (20 per side)
-        // If Low Density, we generate 4 rays (corners only)
-        
-        let steps = showHighDensity ? 20 : 1; 
-        let points = getPerimeterPoints(z_obj, OBJ_SIZE, steps);
-        if(!showHighDensity) points = [{x:x0, y:y0}, {x:-x0, y:y0}, {x:-x0, y:-y0}, {x:x0, y:-y0}];
-
-        let ray_x=[], ray_y=[], ray_z=[];
-
-        points.forEach(p => {
-            // Calculate slopes for this specific point on the perimeter
-            let m_cx = -p.x / (z_v - z_obj);
-            let m_cy = -p.y / (z_h - z_obj);
-            
-            // Define Key Stops
-            let p1 = {x:p.x, y:p.y, z:z_obj};
-            let p2 = {x:0, y:p.y + m_cy*(z_v-z_obj), z:z_v}; // At Slit V
-            let p3 = {x:p.x + m_cx*(z_h-z_obj), y:0, z:z_h}; // At Slit H
-            let p4 = {x:p.x + m_cx*(z_s-z_obj), y:p.y + m_cy*(z_s-z_obj), z:z_s}; // At Sensor
-            
-            // Sort by Z to draw correct path regardless of slider positions
-            let path = [p1, p2, p3, p4].sort((a,b)=>a.z - b.z);
-            
-            path.forEach(pt=>{ ray_x.push(pt.x); ray_y.push(pt.y); ray_z.push(pt.z); });
-            // Add null to break the line before the next ray
-            ray_x.push(null); ray_y.push(null); ray_z.push(null);
-        });
-
-        data.push({
-            x: ray_x, y: ray_y, z: ray_z,
-            mode: 'lines', type: 'scatter3d',
-            // High density lines are thinner and more transparent to create "Surface" effect
-            line: { 
-                color: showHighDensity ? 'rgba(255, 150, 0, 0.3)' : '#ff9900', 
-                width: showHighDensity ? 1 : 4 
-            }, 
-            hoverinfo:'none', name: 'Light Field'
-        });
-
-        // --- HARDWARE VISUALS ---
-        
-        // Vertical Slit (Blue)
-        data.push({
-            x:[0,0], y:[-80,80], z:[z_v, z_v], mode:'lines', 
-            line: {color:'cyan', width:8}, type:'scatter3d'
-        });
-        // Horizontal Slit (Green)
-        data.push({
-            x:[-80,80], y:[0,0], z:[z_h, z_h], mode:'lines', 
-            line: {color:'lime', width:8}, type:'scatter3d'
-        });
-        
-        // Sensor Frame (Gray)
-        data.push(makeRect(z_s, 160, 160, '#444', 'Sensor Frame'));
-        
-        // Projected Image on Sensor (White)
-        data.push(makeRect(z_s, w_proj, h_proj, 'white', 'Sensor Image'));
-
-        // Object (Red Square)
-        data.push(makeRect(z_obj, OBJ_SIZE, OBJ_SIZE, 'red', 'Target'));
-
-        const layout = {
-            scene: {
-                xaxis: {visible: false},
-                yaxis: {visible: false},
-                zaxis: {title: 'Depth', range: [-200, 800], gridcolor: '#333'},
-                aspectmode: 'data',
-                camera: { eye: {x: 1.8, y: 0.8, z: 0.8} },
-                bgcolor: '#000'
-            },
-            margin: {l:0, r:0, b:0, t:0},
-            paper_bgcolor: '#000',
-            showlegend: false
-        };
-
-        Plotly.react('visualization', data, layout);
-    }
-
-    sliderObj.addEventListener('input', updatePlot);
-    sliderV.addEventListener('input', updatePlot);
-    sliderH.addEventListener('input', updatePlot);
-    sliderS.addEventListener('input', updatePlot);
-    chkSurface.addEventListener('change', updatePlot);
-
-    updatePlot();
-
-</script>
 </body>
 </html>
+
