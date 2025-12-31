@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tetrahedral Room (Stable View)</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #000; color: #eee; font-family: monospace; overflow: hidden; }
+        #plot-container { width: 100vw; height: 100vh; }
+        
+        #ui-layer {
+            position: absolute; top: 10px; left: 10px; z-index: 100;
+            background: rgba(20, 20, 20, 0.9); padding: 15px;
+            border: 1px solid #444; border-radius: 4px; pointer-events: auto; width: 220px;
+        }
+        .control-group { margin-bottom: 12px; }
+        label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; text-transform: uppercase; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        
+        .legend { margin-top: 15px; font-size: 11px; line-height: 1.4; color: #aaa; border-top: 1px solid #444; padding-top: 10px; }
+        .cyan { color: #00ffff; font-weight: bold; }
+        .magenta { color: #ff00ff; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="control-group">
+        <label>Room Depth Position (Z)</label>
+        <input type="range" id="obj_z" min="-300" max="500" value="0" step="1">
+    </div>
+    <div class="control-group">
+        <label>V-Slit Position (Blue)</label>
+        <input type="range" id="v_slit_z" min="50" max="400" value="150" step="1">
+    </div>
+    <div class="control-group">
+        <label>H-Slit Position (Red)</label>
+        <input type="range" id="h_slit_z" min="50" max="400" value="250" step="1">
+    </div>
+    <div class="control-group">
+        <label>Screen Position</label>
+        <input type="range" id="screen_z" min="300" max="600" value="500" step="1">
+    </div>
+
+    <div class="legend">
+        <span class="cyan">CYAN WIREFRAME</span><br>3D "Room" (Front Open)<br><br>
+        <span class="magenta">MAGENTA FLAT</span><br>2D Projection<br><br>
+        <i>* Rotate/Zoom is now fully locked during movement.</i>
+    </div>
+</div>
+
+<div id="plot-container"></div>
+
+<script>
+    // --- 1. DEFINE GEOMETRY (The Room) ---
+    const segments = [];
+
+    function addLine(x1, y1, z1, x2, y2, z2) {
+        segments.push({ x:[x1, x2], y:[y1, y2], z:[z1, z2] });
+    }
+
+    const W = 100; const H = 80; const D = 120; 
+    const GRID_STEP = 20;
+
+    const xLeft = -W/2, xRight = W/2;
+    const yBot = -H/2, yTop = H/2;
+    const zBack = -D/2, zFront = D/2;
+
+    // Floor (Longitudinal & Lateral)
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(x, yBot, zBack, x, yBot, zFront);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(xLeft, yBot, z, xRight, yBot, z);
+
+    // Ceiling (Longitudinal & Lateral)
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(x, yTop, zBack, x, yTop, zFront);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(xLeft, yTop, z, xRight, yTop, z);
+
+    // Left Wall (Vertical & Longitudinal)
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(xLeft, yBot, z, xLeft, yTop, z);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(xLeft, y, zBack, xLeft, y, zFront);
+
+    // Right Wall (Vertical & Longitudinal)
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(xRight, yBot, z, xRight, yTop, z);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(xRight, y, zBack, xRight, y, zFront);
+
+    // Back Wall (Vertical & Horizontal)
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(x, yBot, zBack, x, yTop, zBack);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(xLeft, y, zBack, xRight, y, zBack);
+
+
+    // --- 2. UPDATE LOGIC ---
+    const dom = {
+        obj_z: document.getElementById('obj_z'),
+        v_slit: document.getElementById('v_slit_z'),
+        h_slit: document.getElementById('h_slit_z'),
+        screen: document.getElementById('screen_z'),
+        container: document.getElementById('plot-container')
+    };
+
+    function update() {
+        // Safe parsing
+        const objZ = parseFloat(dom.obj_z.value) || 0;
+        const vZ = parseFloat(dom.v_slit.value) || 150;
+        const hZ = parseFloat(dom.h_slit.value) || 250;
+        const sZ = parseFloat(dom.screen.value) || 500;
+
+        const src = { x:[], y:[], z:[] };
+        const proj = { x:[], y:[], z:[] };
+        const rays = { x:[], y:[], z:[] };
+
+        let i = 0;
+        segments.forEach(seg => {
+            const p1 = { x: seg.x[0], y: seg.y[0], z: seg.z[0] + objZ };
+            const p2 = { x: seg.x[1], y: seg.y[1], z: seg.z[1] + objZ };
+
+            // Add to Source
+            src.x.push(p1.x, p2.x, null);
+            src.y.push(p1.y, p2.y, null);
+            src.z.push(p1.z, p2.z, null);
+
+            // Project
+            function getProj(p) {
+                let denX = (p.z - vZ); if(Math.abs(denX) < 0.1) denX = 0.1 * Math.sign(denX);
+                let denY = (p.z - hZ); if(Math.abs(denY) < 0.1) denY = 0.1 * Math.sign(denY);
+                let mx = (sZ - vZ) / denX;
+                let my = (sZ - hZ) / denY;
+                return { x: p.x * mx, y: p.y * my, z: sZ };
+            }
+
+            const proj1 = getProj(p1);
+            const proj2 = getProj(p2);
+
+            // Add to Projection
+            proj.x.push(proj1.x, proj2.x, null);
+            proj.y.push(proj1.y, proj2.y, null);
+            proj.z.push(proj1.z, proj2.z, null);
+
+            // Add Rays (Sparse)
+            i++;
+            if (i % 8 === 0) {
+                rays.x.push(p1.x, proj1.x, null);
+                rays.y.push(p1.y, proj1.y, null);
+                rays.z.push(p1.z, proj1.z, null);
+            }
+        });
+
+        // --- 3. PLOT CONFIG ---
+        const data = [
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: src.x, y: src.y, z: src.z,
+                line: { color: 'cyan', width: 2 },
+                name: 'Room Source', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: proj.x, y: proj.y, z: proj.z,
+                line: { color: 'magenta', width: 3 },
+                name: 'Image', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: rays.x, y: rays.y, z: rays.z,
+                line: { color: '#333', width: 1 },
+                opacity: 0.5, name: 'Rays', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: [0,0, null, -300,300], 
+                y: [-300,300, null, 0,0], 
+                z: [vZ,vZ, null, hZ,hZ],
+                line: { color: 'white', width: 5 },
+                name: 'Slits', hoverinfo: 'none'
+            }
+        ];
+
+        const layout = {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: { l:0, r:0, b:0, t:0 },
+            showlegend: false,
+            // --- THE MAGIC PROPERTY ---
+            // 'uirevision' tells Plotly: "If this value hasn't changed, 
+            // do not reset the camera/zoom/user interaction state."
+            uirevision: 'true', 
+            scene: {
+                xaxis: { visible: false, range: [-500, 500] },
+                yaxis: { visible: false, range: [-500, 500] },
+                zaxis: { title: 'Z', range: [-400, 700], gridcolor: '#222', zerolinecolor: '#444' },
+                aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 1.5 },
+                camera: { eye: { x: 1.8, y: 0.8, z: 0.5 } } // Initial camera only
+            }
+        };
+
+        Plotly.react(dom.container, data, layout);
+    }
+
+    dom.obj_z.addEventListener('input', update);
+    dom.v_slit.addEventListener('input', update);
+    dom.h_slit.addEventListener('input', update);
+    dom.screen.addEventListener('input', update);
+
+    // Initial render
+    requestAnimationFrame(update);
+
+</script>
+</body>
+</html>

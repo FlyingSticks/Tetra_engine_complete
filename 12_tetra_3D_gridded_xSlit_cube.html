@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tetrahedral Room (Curved Projection)</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #000; color: #eee; font-family: monospace; overflow: hidden; }
+        #plot-container { width: 100vw; height: 100vh; }
+        
+        #ui-layer {
+            position: absolute; top: 10px; left: 10px; z-index: 100;
+            background: rgba(20, 20, 20, 0.9); padding: 15px;
+            border: 1px solid #444; border-radius: 4px; pointer-events: auto; width: 220px;
+        }
+        .control-group { margin-bottom: 12px; }
+        label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; text-transform: uppercase; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        
+        .legend { margin-top: 15px; font-size: 11px; line-height: 1.4; color: #aaa; border-top: 1px solid #444; padding-top: 10px; }
+        .cyan { color: #00ffff; font-weight: bold; }
+        .magenta { color: #ff00ff; font-weight: bold; }
+        .note { color: #ff9900; font-style: italic; display: block; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="control-group">
+        <label>Room Depth Position (Z)</label>
+        <input type="range" id="obj_z" min="-300" max="500" value="0" step="1">
+    </div>
+    <div class="control-group">
+        <label>V-Slit Position (Blue)</label>
+        <input type="range" id="v_slit_z" min="50" max="400" value="150" step="1">
+    </div>
+    <div class="control-group">
+        <label>H-Slit Position (Red)</label>
+        <input type="range" id="h_slit_z" min="50" max="400" value="250" step="1">
+    </div>
+    <div class="control-group">
+        <label>Screen Position</label>
+        <input type="range" id="screen_z" min="300" max="600" value="500" step="1">
+    </div>
+
+    <div class="legend">
+        <span class="cyan">CYAN WIREFRAME</span><br>3D "Room" (Source)<br><br>
+        <span class="magenta">MAGENTA CURVES</span><br>2D Projection<br>
+        <span class="note">Notice how the straight depth lines of the room project as curves on the screen.</span>
+    </div>
+</div>
+
+<div id="plot-container"></div>
+
+<script>
+    // --- 1. DEFINE GEOMETRY ---
+    // Instead of raw segments, we store definitions so we can subdivide dynamically
+    const linesDef = [];
+
+    function addLine(x1, y1, z1, x2, y2, z2) {
+        linesDef.push({ p1: {x:x1, y:y1, z:z1}, p2: {x:x2, y:y2, z:z2} });
+    }
+
+    const W = 100; const H = 80; const D = 120; 
+    const GRID_STEP = 20;
+    const xLeft = -W/2, xRight = W/2;
+    const yBot = -H/2, yTop = H/2;
+    const zBack = -D/2, zFront = D/2;
+
+    // Floor & Ceiling (Longitudinal Z)
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) {
+        addLine(x, yBot, zBack, x, yBot, zFront); // Floor Z
+        addLine(x, yTop, zBack, x, yTop, zFront); // Ceiling Z
+    }
+    // Floor & Ceiling (Lateral X)
+    for (let z = zBack; z <= zFront; z += GRID_STEP) {
+        addLine(xLeft, yBot, z, xRight, yBot, z); // Floor X
+        addLine(xLeft, yTop, z, xRight, yTop, z); // Ceiling X
+    }
+    // Walls (Longitudinal Z)
+    for (let y = yBot; y <= yTop; y += GRID_STEP) {
+        addLine(xLeft, y, zBack, xLeft, y, zFront); // Left Z
+        addLine(xRight, y, zBack, xRight, y, zFront); // Right Z
+    }
+    // Walls (Vertical Y)
+    for (let z = zBack; z <= zFront; z += GRID_STEP) {
+        addLine(xLeft, yBot, z, xLeft, yTop, z); // Left Y
+        addLine(xRight, yBot, z, xRight, yTop, z); // Right Y
+    }
+    // Back Wall
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(x, yBot, zBack, x, yTop, zBack);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(xLeft, y, zBack, xRight, y, zBack);
+
+
+    // --- 2. UPDATE LOGIC ---
+    const dom = {
+        obj_z: document.getElementById('obj_z'),
+        v_slit: document.getElementById('v_slit_z'),
+        h_slit: document.getElementById('h_slit_z'),
+        screen: document.getElementById('screen_z'),
+        container: document.getElementById('plot-container')
+    };
+
+    function update() {
+        const objZ = parseFloat(dom.obj_z.value) || 0;
+        const vZ = parseFloat(dom.v_slit.value) || 150;
+        const hZ = parseFloat(dom.h_slit.value) || 250;
+        const sZ = parseFloat(dom.screen.value) || 500;
+
+        const src = { x:[], y:[], z:[] };
+        const proj = { x:[], y:[], z:[] };
+        const rays = { x:[], y:[], z:[] };
+
+        // Ray limiter to prevent clutter
+        let lineIndex = 0;
+
+        linesDef.forEach(line => {
+            // Apply Object Offset
+            const start = { x: line.p1.x, y: line.p1.y, z: line.p1.z + objZ };
+            const end   = { x: line.p2.x, y: line.p2.y, z: line.p2.z + objZ };
+
+            // A. SOURCE: Just straight lines (Start -> End)
+            src.x.push(start.x, end.x, null);
+            src.y.push(start.y, end.y, null);
+            src.z.push(start.z, end.z, null);
+
+            // B. PROJECTION: Must Subdivide to show curvature!
+            // Check if the line has depth (Z-length > 0)
+            const zDiff = end.z - start.z;
+            const steps = (Math.abs(zDiff) > 0.1) ? 20 : 1; // 20 steps for depth lines, 1 for flat lines
+
+            // "Lift Pen" at start of new projected line
+            let firstProjPoint = null;
+
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                
+                // Interpolate current point on the 3D line
+                const curX = start.x + (end.x - start.x) * t;
+                const curY = start.y + (end.y - start.y) * t;
+                const curZ = start.z + (end.z - start.z) * t;
+
+                // Project this specific point
+                let denX = (curZ - vZ); if(Math.abs(denX) < 0.1) denX = 0.1 * Math.sign(denX);
+                let denY = (curZ - hZ); if(Math.abs(denY) < 0.1) denY = 0.1 * Math.sign(denY);
+                
+                const mx = (sZ - vZ) / denX;
+                const my = (sZ - hZ) / denY;
+                
+                const pX = curX * mx;
+                const pY = curY * my;
+                const pZ = sZ; // Flat on screen
+
+                proj.x.push(pX); proj.y.push(pY); proj.z.push(pZ);
+
+                if (i === 0) firstProjPoint = {x: pX, y: pY, z: pZ};
+                if (i === steps) {
+                    // Add sparse rays (End of line to Projected End)
+                    lineIndex++;
+                    if (lineIndex % 8 === 0) {
+                        rays.x.push(end.x, pX, null);
+                        rays.y.push(end.y, pY, null);
+                        rays.z.push(end.z, pZ, null);
+                    }
+                }
+            }
+            // "Lift Pen" after finishing the curved line
+            proj.x.push(null); proj.y.push(null); proj.z.push(null);
+        });
+
+        const data = [
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: src.x, y: src.y, z: src.z,
+                line: { color: 'cyan', width: 2 },
+                name: 'Room Source', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: proj.x, y: proj.y, z: proj.z,
+                line: { color: 'magenta', width: 3 },
+                name: 'Image', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: rays.x, y: rays.y, z: rays.z,
+                line: { color: '#333', width: 1 },
+                opacity: 0.5, name: 'Rays', hoverinfo: 'none'
+            },
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: [0,0, null, -300,300], 
+                y: [-300,300, null, 0,0], 
+                z: [vZ,vZ, null, hZ,hZ],
+                line: { color: 'white', width: 5 },
+                name: 'Slits', hoverinfo: 'none'
+            }
+        ];
+
+        const layout = {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: { l:0, r:0, b:0, t:0 },
+            showlegend: false,
+            uirevision: 'true', // Keeps your camera rotation locked
+            scene: {
+                xaxis: { visible: false, range: [-500, 500] },
+                yaxis: { visible: false, range: [-500, 500] },
+                zaxis: { title: 'Z', range: [-400, 700], gridcolor: '#222', zerolinecolor: '#444' },
+                aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 1.5 },
+                camera: { eye: { x: 1.8, y: 0.8, z: 0.5 } }
+            }
+        };
+
+        Plotly.react(dom.container, data, layout);
+    }
+
+    dom.obj_z.addEventListener('input', update);
+    dom.v_slit.addEventListener('input', update);
+    dom.h_slit.addEventListener('input', update);
+    dom.screen.addEventListener('input', update);
+
+    requestAnimationFrame(update);
+
+</script>
+</body>
+</html>

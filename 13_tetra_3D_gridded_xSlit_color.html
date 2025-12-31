@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tetra Room (High Performance)</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; background-color: #000; color: #eee; font-family: monospace; overflow: hidden; }
+        #plot-container { width: 100vw; height: 100vh; }
+        
+        #ui-layer {
+            position: absolute; top: 10px; left: 10px; z-index: 100;
+            background: rgba(20, 20, 20, 0.9); padding: 15px;
+            border: 1px solid #444; border-radius: 4px; pointer-events: auto; width: 240px;
+        }
+        .control-group { margin-bottom: 12px; }
+        label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; text-transform: uppercase; }
+        input[type=range] { width: 100%; cursor: pointer; }
+        
+        .toggle-row { display: flex; align-items: center; margin-bottom: 15px; border-bottom: 1px solid #444; padding-bottom: 10px; }
+        .toggle-row input { width: auto; margin-right: 10px; }
+        .toggle-label { color: #fff; font-weight: bold; font-size: 12px; cursor: pointer; }
+
+        .legend { margin-top: 10px; font-size: 11px; line-height: 1.5; color: #aaa; }
+        .box { display: inline-block; width: 10px; height: 10px; margin-right: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="toggle-row">
+        <input type="checkbox" id="auto_scan" checked>
+        <label for="auto_scan" class="toggle-label">ENABLE AUTO-SCAN</label>
+    </div>
+
+    <div class="control-group">
+        <label>Room Depth Position (Z)</label>
+        <input type="range" id="obj_z" min="-300" max="600" value="0" step="1">
+    </div>
+    <div class="control-group">
+        <label>V-Slit Position (Blue)</label>
+        <input type="range" id="v_slit_z" min="50" max="400" value="150" step="1">
+    </div>
+    <div class="control-group">
+        <label>H-Slit Position (Red)</label>
+        <input type="range" id="h_slit_z" min="50" max="400" value="250" step="1">
+    </div>
+    <div class="control-group">
+        <label>Screen Position</label>
+        <input type="range" id="screen_z" min="300" max="600" value="500" step="1">
+    </div>
+
+    <div class="legend">
+        <div><span class="box" style="background:#ffd700"></span>Ceiling</div>
+        <div><span class="box" style="background:#0088ff"></span>Floor</div>
+        <div><span class="box" style="background:#ff3333"></span>Left Wall</div>
+        <div><span class="box" style="background:#00ff00"></span>Right Wall</div>
+        <div><span class="box" style="background:#00ffff"></span>Back Wall</div>
+        <div style="margin-top:8px; color:#888; font-style:italic;">* Performance optimized for rotation.</div>
+    </div>
+</div>
+
+<div id="plot-container"></div>
+
+<script>
+    // --- 1. GEOMETRY DEFINITIONS ---
+    const groups = { floor: [], ceiling: [], left: [], right: [], back: [] };
+    function addLine(group, x1, y1, z1, x2, y2, z2) {
+        group.push({ p1: {x:x1, y:y1, z:z1}, p2: {x:x2, y:y2, z:z2} });
+    }
+    const W = 100, H = 80, D = 120, GRID_STEP = 20;
+    const xLeft = -W/2, xRight = W/2, yBot = -H/2, yTop = H/2, zBack = -D/2, zFront = D/2;
+
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(groups.floor, x, yBot, zBack, x, yBot, zFront);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(groups.floor, xLeft, yBot, z, xRight, yBot, z);
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(groups.ceiling, x, yTop, zBack, x, yTop, zFront);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(groups.ceiling, xLeft, yTop, z, xRight, yTop, z);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(groups.left, xLeft, yBot, z, xLeft, yTop, z);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(groups.left, xLeft, y, zBack, xLeft, y, zFront);
+    for (let z = zBack; z <= zFront; z += GRID_STEP) addLine(groups.right, xRight, yBot, z, xRight, yTop, z);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(groups.right, xRight, y, zBack, xRight, y, zFront);
+    for (let x = xLeft; x <= xRight; x += GRID_STEP) addLine(groups.back, x, yBot, zBack, x, yTop, zBack);
+    for (let y = yBot; y <= yTop; y += GRID_STEP) addLine(groups.back, xLeft, y, zBack, xRight, y, zBack);
+
+
+    // --- 2. STATE MANAGEMENT ---
+    const dom = {
+        obj_z: document.getElementById('obj_z'),
+        v_slit: document.getElementById('v_slit_z'),
+        h_slit: document.getElementById('h_slit_z'),
+        screen: document.getElementById('screen_z'),
+        auto: document.getElementById('auto_scan'),
+        container: document.getElementById('plot-container')
+    };
+
+    let time = 0;
+    let needsUpdate = true; // Only render when dirty
+    let lastDrawTime = 0;
+    const FRAME_DELAY = 33; // ~30 FPS cap to allow UI interaction events
+
+    // Mark dirty on any input
+    function flagDirty() { needsUpdate = true; }
+    dom.obj_z.addEventListener('input', flagDirty);
+    dom.v_slit.addEventListener('input', () => { dom.auto.checked = false; flagDirty(); });
+    dom.h_slit.addEventListener('input', () => { dom.auto.checked = false; flagDirty(); });
+    dom.screen.addEventListener('input', flagDirty);
+
+
+    // --- 3. MAIN LOOP ---
+    function loop(timestamp) {
+        requestAnimationFrame(loop);
+
+        // Logic: If Auto is ON, we are always dirty.
+        if (dom.auto.checked) needsUpdate = true;
+
+        // Throttling: Don't render if it hasn't been enough time (allows mouse events to slip in)
+        if (timestamp - lastDrawTime < FRAME_DELAY) return;
+        
+        if (needsUpdate) {
+            update(timestamp);
+            lastDrawTime = timestamp;
+            // If auto is off, we are clean now
+            if (!dom.auto.checked) needsUpdate = false; 
+        }
+    }
+
+    function update(timestamp) {
+        // Animation Step
+        if (dom.auto.checked) {
+            time += 0.015; // Speed adjustment
+            const val = 175 + 275 * Math.sin(time);
+            dom.obj_z.value = val;
+        }
+
+        const objZ = parseFloat(dom.obj_z.value);
+        const vZ = parseFloat(dom.v_slit.value);
+        const hZ = parseFloat(dom.h_slit.value);
+        const sZ = parseFloat(dom.screen.value);
+
+        const allTraces = [];
+
+        function processGroup(lines, colorHex) {
+            const src = { x:[], y:[], z:[] };
+            const proj = { x:[], y:[], z:[] };
+
+            lines.forEach(line => {
+                const start = { x: line.p1.x, y: line.p1.y, z: line.p1.z + objZ };
+                const end   = { x: line.p2.x, y: line.p2.y, z: line.p2.z + objZ };
+
+                src.x.push(start.x, end.x, null);
+                src.y.push(start.y, end.y, null);
+                src.z.push(start.z, end.z, null);
+
+                // Lower resolution slightly during motion for performance? 
+                // Let's keep 15 steps but relying on the FPS cap to save us.
+                const zDiff = Math.abs(end.z - start.z);
+                const steps = (zDiff > 0.1) ? 12 : 1; 
+
+                for (let i = 0; i <= steps; i++) {
+                    const t = i / steps;
+                    const cx = start.x + (end.x - start.x) * t;
+                    const cy = start.y + (end.y - start.y) * t;
+                    const cz = start.z + (end.z - start.z) * t;
+
+                    let denX = (cz - vZ); if(Math.abs(denX)<0.1) denX = 0.1 * Math.sign(denX);
+                    let denY = (cz - hZ); if(Math.abs(denY)<0.1) denY = 0.1 * Math.sign(denY);
+                    
+                    proj.x.push(cx * ((sZ - vZ)/denX));
+                    proj.y.push(cy * ((sZ - hZ)/denY));
+                    proj.z.push(sZ);
+                }
+                proj.x.push(null); proj.y.push(null); proj.z.push(null);
+            });
+
+            allTraces.push({
+                type: 'scatter3d', mode: 'lines',
+                x: src.x, y: src.y, z: src.z,
+                line: { color: colorHex, width: 2 }, opacity: 0.3, hoverinfo: 'none'
+            });
+            allTraces.push({
+                type: 'scatter3d', mode: 'lines',
+                x: proj.x, y: proj.y, z: proj.z,
+                line: { color: colorHex, width: 4 }, hoverinfo: 'none'
+            });
+        }
+
+        processGroup(groups.ceiling, '#ffd700');
+        processGroup(groups.floor,   '#0088ff');
+        processGroup(groups.left,    '#ff3333');
+        processGroup(groups.right,   '#00ff00');
+        processGroup(groups.back,    '#00ffff');
+
+        allTraces.push({
+            type: 'scatter3d', mode: 'lines',
+            x: [0,0, null, -300,300], y: [-300,300, null, 0,0], z: [vZ,vZ, null, hZ,hZ],
+            line: { color: 'white', width: 5 }, hoverinfo: 'none'
+        });
+
+        // --- CAMERA PERSISTENCE ---
+        const layout = {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: { l:0, r:0, b:0, t:0 },
+            showlegend: false,
+            uirevision: 'true', // Essential for drag-rotate persistence
+            scene: {
+                xaxis: { visible: false, range: [-500, 500] },
+                yaxis: { visible: false, range: [-500, 500] },
+                zaxis: { title: '', range: [-400, 700], gridcolor: '#222', zerolinecolor: '#444' },
+                aspectmode: 'manual', aspectratio: { x: 1, y: 1, z: 1.5 }
+            }
+        };
+
+        // Capture current camera if it exists
+        if (dom.container._fullLayout && dom.container._fullLayout.scene) {
+            layout.scene.camera = dom.container._fullLayout.scene.camera;
+        } else {
+            layout.scene.camera = { eye: { x: 1.8, y: 0.8, z: 0.5 } };
+        }
+
+        Plotly.react(dom.container, allTraces, layout);
+    }
+
+    // Kickoff
+    requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>

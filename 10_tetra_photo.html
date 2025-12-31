@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Image Projection (Clear View)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Courier New', monospace; }
+        #canvas-container { width: 100%; height: 100vh; }
+        
+        #ui {
+            position: absolute; top: 10px; left: 10px; width: 300px;
+            background: rgba(10, 10, 10, 0.9); border: 1px solid #444;
+            padding: 15px; color: #eee; border-radius: 8px;
+            pointer-events: auto;
+        }
+        
+        h3 { margin-top: 0; color: #ff9900; border-bottom: 1px solid #555; padding-bottom: 5px; }
+        
+        .control-group { margin-bottom: 12px; }
+        label { display: block; font-size: 11px; color: #aaa; margin-bottom: 4px; }
+        input[type=range] { width: 100%; cursor: ew-resize; }
+        
+        .data-display {
+            display: flex; justify-content: space-between;
+            font-size: 12px; color: #00e5ff; font-weight: bold; margin-bottom: 5px;
+        }
+
+        .upload-btn {
+            margin-top: 10px;
+            width: 100%;
+            padding: 8px;
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            cursor: pointer;
+            text-align: center;
+        }
+        .upload-btn:hover { background: #444; }
+        input[type="file"] { display: none; }
+
+        .legend { font-size: 10px; color: #666; margin-top: 10px; line-height: 1.4; }
+    </style>
+</head>
+<body>
+
+<div id="ui">
+    <h3>TETRA PROJECTOR</h3>
+    
+    <div class="control-group">
+        <div class="data-display">
+            <span>OBJECT Z</span>
+            <span id="val-obj">0</span>
+        </div>
+        <input type="range" id="slider-obj" min="-100" max="600" value="0">
+        <label><input type="checkbox" id="chk-anim"> Auto-Scan (Video Mode)</label>
+    </div>
+
+    <div class="control-group">
+        <div class="data-display">
+            <span>V-SLIT (BLUE)</span>
+            <span id="val-v">150</span>
+        </div>
+        <input type="range" id="slider-v" min="50" max="500" value="150">
+    </div>
+
+    <div class="control-group">
+        <div class="data-display">
+            <span>H-SLIT (GREEN)</span>
+            <span id="val-h">250</span>
+        </div>
+        <input type="range" id="slider-h" min="50" max="500" value="250">
+    </div>
+
+    <div class="control-group">
+        <div class="data-display">
+            <span>SCREEN Z</span>
+            <span id="val-s">400</span>
+        </div>
+        <input type="range" id="slider-s" min="200" max="800" value="400">
+    </div>
+
+    <div style="border-top: 1px solid #333; padding-top:10px;">
+        <label>MAGNIFICATION (X / Y)</label>
+        <div id="mag-vals" style="font-size: 14px; color: #fff;">1.00 / 1.00</div>
+    </div>
+
+    <label class="upload-btn">
+        UPLOAD IMAGE
+        <input type="file" id="file-input" accept="image/*">
+    </label>
+
+    <div class="legend">
+        * Image flips when Object passes a Slit.<br>
+        * Image collapses to a line when Object hits a Slit.
+    </div>
+</div>
+
+<div id="canvas-container"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+<script>
+    // --- 1. SCENE SETUP ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000); 
+    // FOG REMOVED per request
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 2000);
+    camera.position.set(200, 150, 600);
+    camera.lookAt(0, 0, 200);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+    // Grid Helper (Slightly dimmer for better image contrast)
+    const gridHelper = new THREE.GridHelper(1000, 50, 0x333333, 0x111111);
+    gridHelper.position.y = -100;
+    scene.add(gridHelper);
+
+    // --- 2. TEXTURE LOADING ---
+    // We try to load 'IMG_1735.jpg' by default. 
+    // If it's missing, Three.js usually renders black or a warning, but the code won't crash.
+    const textureLoader = new THREE.TextureLoader();
+    const defaultTexture = textureLoader.load('IMG_1735.jpg', (tex) => {
+        // Callback to ensure sharp rendering
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+    });
+
+    // --- 3. OBJECTS ---
+
+    // A. Source Object
+    // We adjust aspect ratio to match the square geometry or rely on UV mapping. 
+    // For general photos, a square plane is fine; the texture will stretch to fit.
+    const srcGeo = new THREE.PlaneGeometry(80, 80);
+    const srcMat = new THREE.MeshBasicMaterial({ 
+        map: defaultTexture, 
+        side: THREE.DoubleSide 
+    });
+    const sourceMesh = new THREE.Mesh(srcGeo, srcMat);
+    scene.add(sourceMesh);
+    
+    // Border for source
+    const srcBorder = new THREE.LineSegments(
+        new THREE.EdgesGeometry(srcGeo), 
+        new THREE.LineBasicMaterial({ color: 0xff0000 })
+    );
+    sourceMesh.add(srcBorder);
+
+
+    // B. Projected Screen
+    const projGeo = new THREE.PlaneGeometry(80, 80); // Base size, will scale
+    const projMat = new THREE.MeshBasicMaterial({ 
+        map: defaultTexture, 
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.95 // Slightly more opaque since we removed fog
+    });
+    const projMesh = new THREE.Mesh(projGeo, projMat);
+    scene.add(projMesh);
+
+    // C. Slits (Visuals)
+    const slitMatV = new THREE.LineBasicMaterial({ color: 0x00ffff, linewidth: 2 });
+    const slitMatH = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
+    
+    // Vertical Slit Geometry
+    const slitVGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, -200, 0), new THREE.Vector3(0, 200, 0)
+    ]);
+    const slitV = new THREE.Line(slitVGeo, slitMatV);
+    scene.add(slitV);
+
+    // Horizontal Slit Geometry
+    const slitHGeo = new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(-200, 0, 0), new THREE.Vector3(200, 0, 0)
+    ]);
+    const slitH = new THREE.Line(slitHGeo, slitMatH);
+    scene.add(slitH);
+
+
+    // D. Connecting Rays
+    const raysGeo = new THREE.BufferGeometry();
+    const raysPos = new Float32Array(8 * 3 * 2); 
+    raysGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(4 * 2 * 3), 3));
+    const raysMat = new THREE.LineBasicMaterial({ color: 0xffaa00, transparent: true, opacity: 0.4 });
+    const rays = new THREE.LineSegments(raysGeo, raysMat);
+    scene.add(rays);
+
+
+    // --- 4. LOGIC & ANIMATION ---
+
+    const ui = {
+        z_obj: 0,
+        z_v: 150,
+        z_h: 250,
+        z_s: 400,
+        auto: false
+    };
+
+    // DOM Elements
+    const slObj = document.getElementById('slider-obj');
+    const slV = document.getElementById('slider-v');
+    const slH = document.getElementById('slider-h');
+    const slS = document.getElementById('slider-s');
+    const chkAnim = document.getElementById('chk-anim');
+    
+    const dispObj = document.getElementById('val-obj');
+    const dispV = document.getElementById('val-v');
+    const dispH = document.getElementById('val-h');
+    const dispS = document.getElementById('val-s');
+    const dispMag = document.getElementById('mag-vals');
+
+    // Handle File Upload
+    document.getElementById('file-input').addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if(!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+            const img = new Image();
+            img.onload = () => {
+                const tex = new THREE.Texture(img);
+                tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                tex.needsUpdate = true;
+                srcMat.map = tex;
+                projMat.map = tex;
+            };
+            img.src = evt.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
+
+    let time = 0;
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        // Update UI Values
+        ui.z_v = parseFloat(slV.value);
+        ui.z_h = parseFloat(slH.value);
+        ui.z_s = parseFloat(slS.value);
+
+        if (chkAnim.checked) {
+            time += 0.01;
+            ui.z_obj = 125 + 225 * Math.sin(time);
+            slObj.value = ui.z_obj;
+        } else {
+            ui.z_obj = parseFloat(slObj.value);
+        }
+
+        // Update Displays
+        dispObj.innerText = ui.z_obj.toFixed(0);
+        dispV.innerText = ui.z_v;
+        dispH.innerText = ui.z_h;
+        dispS.innerText = ui.z_s;
+
+        // --- THE MATH ---
+        
+        // 1. Position Elements
+        sourceMesh.position.z = ui.z_obj;
+        slitV.position.z = ui.z_v;
+        slitH.position.z = ui.z_h;
+        projMesh.position.z = ui.z_s;
+
+        // 2. Calculate Magnification Factors
+        let den_x = (ui.z_obj - ui.z_v);
+        let den_y = (ui.z_obj - ui.z_h);
+
+        if (Math.abs(den_x) < 0.1) den_x = 0.1;
+        if (Math.abs(den_y) < 0.1) den_y = 0.1;
+
+        const mag_x = (ui.z_s - ui.z_v) / den_x;
+        const mag_y = (ui.z_s - ui.z_h) / den_y;
+
+        // 3. Apply to Projected Mesh (Negative scale handles the flip)
+        projMesh.scale.set(mag_x, mag_y, 1);
+
+        dispMag.innerText = `${mag_x.toFixed(2)} / ${mag_y.toFixed(2)}`;
+
+        // 4. Update Connecting Rays
+        const sW = 40; const sH = 40; 
+        
+        // Source Corners (World Space)
+        const TL_s = new THREE.Vector3(-sW, sH, ui.z_obj);
+        const TR_s = new THREE.Vector3(sW, sH, ui.z_obj);
+        const BL_s = new THREE.Vector3(-sW, -sH, ui.z_obj);
+        const BR_s = new THREE.Vector3(sW, -sH, ui.z_obj);
+
+        // Projected Corners (World Space)
+        const TL_p = new THREE.Vector3(-sW * mag_x, sH * mag_y, ui.z_s);
+        const TR_p = new THREE.Vector3(sW * mag_x, sH * mag_y, ui.z_s);
+        const BL_p = new THREE.Vector3(-sW * mag_x, -sH * mag_y, ui.z_s);
+        const BR_p = new THREE.Vector3(sW * mag_x, -sH * mag_y, ui.z_s);
+
+        // Update Buffer Attribute
+        const positions = rays.geometry.attributes.position.array;
+        
+        positions[0] = TL_s.x; positions[1] = TL_s.y; positions[2] = TL_s.z;
+        positions[3] = TL_p.x; positions[4] = TL_p.y; positions[5] = TL_p.z;
+
+        positions[6] = TR_s.x; positions[7] = TR_s.y; positions[8] = TR_s.z;
+        positions[9] = TR_p.x; positions[10] = TR_p.y; positions[11] = TR_p.z;
+
+        positions[12] = BL_s.x; positions[13] = BL_s.y; positions[14] = BL_s.z;
+        positions[15] = BL_p.x; positions[16] = BL_p.y; positions[17] = BL_p.z;
+        
+        positions[18] = BR_s.x; positions[19] = BR_s.y; positions[20] = BR_s.z;
+        positions[21] = BR_p.x; positions[22] = BR_p.y; positions[23] = BR_p.z;
+
+        rays.geometry.attributes.position.needsUpdate = true;
+
+        renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+
+</script>
+</body>
+</html>
