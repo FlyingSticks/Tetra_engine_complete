@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Cube Scanner (Optimized)</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: #fff; font-family: monospace; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        
+        .hud { 
+            position: absolute; top: 10px; left: 10px; z-index: 100; 
+            background: rgba(10, 10, 30, 0.9); 
+            padding: 15px; width: 300px;
+            border: 1px solid #00e5ff; border-radius: 4px;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.3);
+            display: flex; flex-direction: column;
+            max-height: 90vh;
+        }
+        
+        #tracker-container {
+            flex-grow: 1; overflow-y: auto; margin-bottom: 10px; padding-right: 5px;
+            border-bottom: 1px solid #333;
+        }
+
+        /* Custom Scrollbar */
+        #tracker-container::-webkit-scrollbar { width: 6px; }
+        #tracker-container::-webkit-scrollbar-track { background: #111; }
+        #tracker-container::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+        .hud h3 { margin: 0 0 10px 0; color: #00e5ff; font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #333; padding-bottom: 5px; flex-shrink: 0; }
+        
+        .tracker-row { display: flex; justify-content: space-between; margin-bottom: 4px; font-size: 11px; border-bottom: 1px dashed #222; padding-bottom: 2px;}
+        .tracker-lbl { font-weight: bold; color: #ccc; }
+        .tracker-val { font-family: 'Courier New', monospace; color: #00ff00; }
+        .tracker-err { font-family: 'Courier New', monospace; color: #ff5555; }
+
+        .control-group { margin-bottom: 8px; }
+        .control-group label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
+        .control-group input { width: 100%; accent-color: #00e5ff; }
+    </style>
+</head>
+<body>
+
+<div class="hud">
+    <h3>Volumetric Depth Scanner</h3>
+    
+    <div id="tracker-container">
+        </div>
+
+    <div class="control-group">
+        <label>Vertical Slit (Z) <span id="lbl-v">150</span></label>
+        <input type="range" id="slider-v" min="50" max="400" value="150" step="1">
+    </div>
+    <div class="control-group">
+        <label>Horizontal Slit (Z) <span id="lbl-h">250</span></label>
+        <input type="range" id="slider-h" min="50" max="400" value="250" step="1">
+    </div>
+    <div style="font-size:10px; color:#666;">
+        Processing 16 Spherical Targets<br>
+        Batch Rendering Active
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    // --- Configuration ---
+    const OBJ_R = 6; // Radius
+    const SCREEN_Z = 500;
+    
+    // --- Generate Targets (2 Cubes) ---
+    const TARGETS = [];
+    function createCube(cz, size, color, groupName) {
+        let half = size/2;
+        let idx=1;
+        for(let x of [-1, 1]) {
+            for(let y of [-1, 1]) {
+                for(let z of [-1, 1]) {
+                    TARGETS.push({
+                        id: `${groupName}-${idx++}`,
+                        x: x*half, y: y*half, z: cz + z*half,
+                        color: color
+                    });
+                }
+            }
+        }
+    }
+    createCube(0, 100, '#ffaa00', 'A');  // Orange Cube at Z=0
+    createCube(120, 100, '#00e5ff', 'B'); // Cyan Cube at Z=120
+
+    // --- Math Helpers ---
+    // Pre-calculate Unit Sphere to reuse (optimization)
+    const UNIT_SPHERE = (function(){
+        let x=[], y=[], z=[];
+        let steps=8; 
+        for(let i=0; i<=steps; i++){
+            let lat = (i/steps)*Math.PI;
+            for(let j=0; j<=steps*2; j++){
+                let lon = (j/(steps*2))*2*Math.PI;
+                x.push(Math.sin(lat) * Math.cos(lon));
+                y.push(Math.sin(lat) * Math.sin(lon));
+                z.push(Math.cos(lat));
+            }
+            x.push(null); y.push(null); z.push(null);
+        }
+        return {x,y,z};
+    })();
+
+    function getSpherePoints(cx, cy, cz, r) {
+        // Transform unit sphere to location
+        let x = UNIT_SPHERE.x.map(v => v===null ? null : cx + v*r);
+        let y = UNIT_SPHERE.y.map(v => v===null ? null : cy + v*r);
+        let z = UNIT_SPHERE.z.map(v => v===null ? null : cz + v*r);
+        return {x,y,z};
+    }
+
+    function projectPoint(x, y, z, zv, zh, zs) {
+        let dv = zv - z; if(Math.abs(dv)<0.1) dv = 0.1;
+        let dh = zh - z; if(Math.abs(dh)<0.1) dh = 0.1;
+        let mx = -x / dv;
+        let my = -y / dh;
+        return {
+            x: x + mx * (zs - z),
+            y: y + my * (zs - z),
+            z: zs
+        };
+    }
+
+    function solveDepth(w, h, zv, zh, zs) {
+        if(h < 0.001) return null;
+        let ar = w/h;
+        let tv = zs - zv;
+        let th = zs - zh;
+        let num = (ar * zv * th) - (zh * tv);
+        let den = (ar * th) - tv;
+        if(Math.abs(den) < 0.001) return null;
+        return num / den;
+    }
+
+    // --- Main Update Loop ---
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const lblV = document.getElementById('lbl-v');
+    const lblH = document.getElementById('lbl-h');
+    const trackerContainer = document.getElementById('tracker-container');
+
+    function update() {
+        const zv = parseFloat(sliderV.value);
+        const zh = parseFloat(sliderH.value);
+        
+        lblV.innerText = zv;
+        lblH.innerText = zh;
+
+        // BATCH ARRAYS (The Fix)
+        // Instead of 16 traces, we create lists for "Orange Objects", "Cyan Objects", etc.
+        const Batches = {
+            src_A: {x:[], y:[], z:[], color:'#ffaa00'},
+            src_B: {x:[], y:[], z:[], color:'#00e5ff'},
+            proj_A: {x:[], y:[], z:[], color:'#ffaa00'},
+            proj_B: {x:[], y:[], z:[], color:'#00e5ff'},
+            boxes: {x:[], y:[], z:[], color:'white'}
+        };
+
+        let hudHTML = "";
+
+        // Process all targets
+        TARGETS.forEach(t => {
+            // Determine Batch Group (A or B)
+            const grp = t.id.startsWith('A') ? 'A' : 'B';
+            
+            // 1. Source Geometry (Wireframe Sphere)
+            const sph = getSpherePoints(t.x, t.y, t.z, OBJ_R);
+            // Append to batch
+            Batches[`src_${grp}`].x.push(...sph.x, null);
+            Batches[`src_${grp}`].y.push(...sph.y, null);
+            Batches[`src_${grp}`].z.push(...sph.z, null);
+
+            // 2. Project Geometry
+            let pX=[], pY=[], pZ=[];
+            for(let i=0; i<sph.x.length; i++){
+                if(sph.x[i]===null) {
+                    pX.push(null); pY.push(null); pZ.push(null);
+                } else {
+                    let p = projectPoint(sph.x[i], sph.y[i], sph.z[i], zv, zh, SCREEN_Z);
+                    pX.push(p.x); pY.push(p.y); pZ.push(p.z);
+                }
+            }
+            Batches[`proj_${grp}`].x.push(...pX, null);
+            Batches[`proj_${grp}`].y.push(...pY, null);
+            Batches[`proj_${grp}`].z.push(...pZ, null);
+
+            // 3. Measure & Solve (The "CV" Step)
+            // Calculate projected bounding box
+            // L/R edges
+            let xl = t.x - OBJ_R; let xr = t.x + OBJ_R;
+            let pl = projectPoint(xl, t.y, t.z, zv, zh, SCREEN_Z).x;
+            let pr = projectPoint(xr, t.y, t.z, zv, zh, SCREEN_Z).x;
+            let w = Math.abs(pr - pl);
+
+            // T/B edges
+            let yt = t.y + OBJ_R; let yb = t.y - OBJ_R;
+            let pt = projectPoint(t.x, yt, t.z, zv, zh, SCREEN_Z).y;
+            let pb = projectPoint(t.x, yb, t.z, zv, zh, SCREEN_Z).y;
+            let h = Math.abs(pt - pb);
+
+            let zCalc = solveDepth(w, h, zv, zh, SCREEN_Z);
+
+            // 4. Bounding Box Geometry
+            // Use Min/Max of projection to draw box
+            let bx_min = Math.min(pl, pr); let bx_max = Math.max(pl, pr);
+            let by_min = Math.min(pt, pb); let by_max = Math.max(pt, pb);
+            
+            let boxX = [bx_min, bx_max, bx_max, bx_min, bx_min, null];
+            let boxY = [by_max, by_max, by_min, by_min, by_max, null];
+            let boxZ = [SCREEN_Z, SCREEN_Z, SCREEN_Z, SCREEN_Z, SCREEN_Z, null];
+            
+            Batches.boxes.x.push(...boxX);
+            Batches.boxes.y.push(...boxY);
+            Batches.boxes.z.push(...boxZ);
+
+            // 5. Update HUD Text
+            let zDisp = zCalc !== null ? zCalc.toFixed(1) : "ERR";
+            let err = zCalc !== null ? Math.abs(zCalc - t.z) : 999;
+            let css = err < 2.0 ? "tracker-val" : "tracker-err";
+            
+            hudHTML += `
+                <div class="tracker-row" style="color:${t.color}">
+                    <span class="tracker-lbl">${t.id}</span>
+                    <span class="${css}">${zDisp}</span>
+                </div>`;
+        });
+
+        trackerContainer.innerHTML = hudHTML;
+
+        // --- CONSTRUCT PLOTLY TRACES ---
+        const data = [];
+
+        // Helper to make trace
+        function makeTrace(batch, mode, width, opacity, name) {
+            return {
+                type: 'scatter3d', mode: mode,
+                x: batch.x, y: batch.y, z: batch.z,
+                line: {color: batch.color, width: width},
+                opacity: opacity, hoverinfo: 'none', name: name
+            };
+        }
+
+        // Add Source Traces
+        data.push(makeTrace(Batches.src_A, 'lines', 1, 0.3, 'Source A'));
+        data.push(makeTrace(Batches.src_B, 'lines', 1, 0.3, 'Source B'));
+
+        // Add Project Traces
+        data.push(makeTrace(Batches.proj_A, 'lines', 4, 1.0, 'Proj A'));
+        data.push(makeTrace(Batches.proj_B, 'lines', 4, 1.0, 'Proj B'));
+
+        // Add Boxes Trace
+        data.push(makeTrace(Batches.boxes, 'lines', 1, 0.5, 'Boxes'));
+
+        // Add Slits
+        data.push({x:[0,0], y:[-300,300], z:[zv,zv], mode:'lines', line:{color:'white', width:4}, type:'scatter3d', hoverinfo:'none'});
+        data.push({x:[-300,300], y:[0,0], z:[zh,zh], mode:'lines', line:{color:'white', width:4}, type:'scatter3d', hoverinfo:'none'});
+        
+        // Add Screen Frame
+        let s = 300;
+        data.push({
+            x:[-s,s,s,-s,-s], y:[s,s,-s,-s,s], z:[SCREEN_Z, SCREEN_Z, SCREEN_Z, SCREEN_Z, SCREEN_Z],
+            mode:'lines', line:{color:'#333', width:2}, type:'scatter3d', hoverinfo:'none'
+        });
+
+        const layout = {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: {l:0, r:0, b:0, t:0}, showlegend: false,
+            scene: {
+                xaxis: {visible:false}, yaxis: {visible:false},
+                zaxis: {title: 'Depth', range: [-100, 600], gridcolor: '#222'},
+                camera: {eye: {x:1.5, y:0.8, z:0.5}},
+                dragmode: 'orbit'
+            }
+        };
+
+        Plotly.react('visualization', data, layout);
+    }
+
+    sliderV.addEventListener('input', update);
+    sliderH.addEventListener('input', update);
+    
+    // Init
+    update();
+
+</script>
+</body>
+</html>

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Calibration Curve</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #111; color: #fff; font-family: sans-serif; height: 100vh; display: flex; flex-direction: column; }
+        
+        #controls { padding: 10px; background: #222; border-bottom: 1px solid #444; display: flex; align-items: center; gap: 20px; }
+        label { font-size: 14px; font-weight: bold; color: #ccc; }
+        input[type=range] { width: 300px; cursor: pointer; }
+        
+        #container { flex: 1; display: flex; }
+        #view-3d { flex: 1; border-right: 1px solid #333; position: relative; }
+        #view-graph { flex: 1; background: #000; }
+        
+        .overlay-title { position: absolute; top: 10px; left: 10px; color: #666; font-size: 12px; font-weight: bold; pointer-events: none; z-index: 10; }
+    </style>
+</head>
+<body>
+
+<div id="controls">
+    <label>Object Depth (Z): <span id="val-z" style="color:#ff9900; width:50px; display:inline-block;">0</span></label>
+    <input type="range" id="slider-z" min="-100" max="400" value="0" step="1">
+    <div style="font-size:12px; color:#888;">
+        Move the slider to see how the Shape (Aspect Ratio) maps to Depth on the graph.
+    </div>
+</div>
+
+<div id="container">
+    <div id="view-3d">
+        <div class="overlay-title">PHYSICAL VIEW</div>
+    </div>
+    <div id="view-graph">
+        </div>
+</div>
+
+<script>
+    // --- Config ---
+    const ZV = 150;
+    const ZH = 250;
+    const ZS = 500;
+
+    // --- Graph Data Prep ---
+    // Pre-calculate the theoretical curve
+    let graphX = [];
+    let graphY = [];
+    for(let z = -100; z <= 400; z+=2){
+        if(Math.abs(z - ZV) < 2 || Math.abs(z - ZH) < 2) continue; // Skip singularities
+        let mx = (ZS - ZV)/(z - ZV);
+        let my = (ZS - ZH)/(z - ZH);
+        let ar = Math.abs(mx/my);
+        if(ar < 10) { // Clip infinity for display
+            graphX.push(z);
+            graphY.push(ar);
+        }
+    }
+
+    // --- Functions ---
+    function makeSphere(cx, cy, cz, r) {
+        // Simplified sphere
+        let x=[], y=[], z=[];
+        const steps = 12;
+        for(let i=0; i<=steps; i++){
+            let lat = (i/steps)*Math.PI;
+            for(let j=0; j<=steps*2; j++){
+                let lon = (j/(steps*2))*2*Math.PI;
+                x.push(cx + r * Math.sin(lat) * Math.cos(lon));
+                y.push(cy + r * Math.sin(lat) * Math.sin(lon));
+                z.push(cz + r * Math.cos(lat));
+            }
+            x.push(null); y.push(null); z.push(null);
+        }
+        return {x,y,z};
+    }
+
+    function project(pts, z) {
+        let px=[], py=[], pz=[];
+        for(let i=0; i<pts.x.length; i++){
+            if(pts.x[i]===null) { px.push(null); py.push(null); pz.push(null); continue; }
+            let x0=pts.x[i], y0=pts.y[i];
+            let mx = -x0 / (ZV - z);
+            let my = -y0 / (ZH - z);
+            px.push(x0 + mx*(ZS-z));
+            py.push(y0 + my*(ZS-z));
+            pz.push(ZS);
+        }
+        return {x:px, y:py, z:pz};
+    }
+
+    // --- Update Loop ---
+    const slider = document.getElementById('slider-z');
+    const dispVal = document.getElementById('val-z');
+
+    function update() {
+        const z = parseFloat(slider.value);
+        dispVal.innerText = z;
+
+        // 1. 3D View Data
+        let sphere = makeSphere(0, 0, z, 20);
+        let proj = project(sphere, z);
+        
+        let data3d = [
+            // Source Sphere
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: sphere.x, y: sphere.y, z: sphere.z,
+                line: {color: '#555', width: 1}, opacity:0.5, hoverinfo:'none'
+            },
+            // Projected Image
+            {
+                type: 'scatter3d', mode: 'lines',
+                x: proj.x, y: proj.y, z: proj.z,
+                line: {color: '#ff9900', width: 4}, name: 'Projection'
+            },
+            // Slits
+            {x:[0,0], y:[-100,100], z:[ZV,ZV], type:'scatter3d', mode:'lines', line:{color:'cyan', width:4}},
+            {x:[-100,100], y:[0,0], z:[ZH,ZH], type:'scatter3d', mode:'lines', line:{color:'lime', width:4}}
+        ];
+
+        let layout3d = {
+            paper_bgcolor: '#111', plot_bgcolor: '#111',
+            margin: {l:0, r:0, b:0, t:0}, showlegend: false,
+            scene: {
+                xaxis: {visible:false}, yaxis: {visible:false},
+                zaxis: {title: 'Z', range: [-150, 550], gridcolor: '#333'},
+                camera: {eye: {x:1.5, y:1.0, z:0.5}}
+            }
+        };
+
+        // 2. Graph Data
+        // Calculate current point
+        let curMx = (ZS - ZV)/(z - ZV);
+        let curMy = (ZS - ZH)/(z - ZH);
+        let curAR = Math.abs(curMx/curMy);
+
+        let dataGraph = [
+            // The Curve
+            {
+                x: graphX, y: graphY, mode: 'lines', 
+                line: {color: '#444', width: 2}, name: 'Calibration Curve'
+            },
+            // The Current Point
+            {
+                x: [z], y: [curAR], mode: 'markers',
+                marker: {color: '#ff9900', size: 12, line:{color:'#fff', width:2}},
+                name: 'Current Object'
+            },
+            // Vertical Lines for Slits
+            { x: [ZV, ZV], y: [0, 10], mode: 'lines', line: {color: 'cyan', dash: 'dot', width: 1}, name: 'V-Slit' },
+            { x: [ZH, ZH], y: [0, 10], mode: 'lines', line: {color: 'lime', dash: 'dot', width: 1}, name: 'H-Slit' }
+        ];
+
+        let layoutGraph = {
+            title: {text: 'Aspect Ratio vs Depth', font: {color: '#fff'}},
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            xaxis: {title: 'Depth (Z)', gridcolor: '#333', zerolinecolor: '#444', range:[-100, 400], color: '#aaa'},
+            yaxis: {title: 'Aspect Ratio (W/H)', gridcolor: '#333', zerolinecolor: '#444', range:[0, 5], color: '#aaa'},
+            showlegend: false,
+            margin: {l:50, r:20, b:50, t:50}
+        };
+
+        Plotly.react('view-3d', data3d, layout3d);
+        Plotly.react('view-graph', dataGraph, layoutGraph);
+    }
+
+    slider.addEventListener('input', update);
+    
+    // Initial draw
+    setTimeout(update, 100); // Small delay to ensure containers ready
+
+</script>
+</body>
+</html>

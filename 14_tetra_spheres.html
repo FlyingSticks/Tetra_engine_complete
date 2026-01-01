@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetrahedral Multi-Target Scanner</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #000; color: #fff; font-family: monospace; overflow: hidden; }
+        #visualization { width: 100vw; height: 100vh; }
+        
+        .hud { 
+            position: absolute; top: 10px; left: 10px; z-index: 100; 
+            background: rgba(10, 10, 30, 0.9); 
+            padding: 15px; width: 280px;
+            border: 1px solid #00e5ff; border-radius: 4px;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.3);
+        }
+        .hud h3 { margin: 0 0 10px 0; color: #00e5ff; font-size: 14px; text-transform: uppercase; border-bottom: 1px solid #333; padding-bottom: 5px; }
+        
+        .tracker-row { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 12px; border-bottom: 1px dashed #333; padding-bottom: 2px;}
+        .tracker-lbl { font-weight: bold; }
+        .tracker-val { font-family: 'Courier New', monospace; color: #00ff00; }
+        
+        .control-group { margin-top: 15px; }
+        .control-group label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
+        .control-group input { width: 100%; accent-color: #00e5ff; }
+    </style>
+</head>
+<body>
+
+<div class="hud">
+    <h3>Active Depth Scanner</h3>
+    <div id="tracker-data">
+        </div>
+
+    <div class="control-group">
+        <label>Vertical Slit Position (Z)</label>
+        <input type="range" id="slider-v" min="50" max="300" value="150" step="1">
+    </div>
+    <div class="control-group">
+        <label>Horizontal Slit Position (Z)</label>
+        <input type="range" id="slider-h" min="50" max="300" value="250" step="1">
+    </div>
+    <div style="margin-top:10px; font-size:10px; color:#aaa;">
+        * The "CV System" measures the width/height of the projected blobs and calculates Z instantly.
+    </div>
+</div>
+
+<div id="visualization"></div>
+
+<script>
+    // --- Config ---
+    const OBJ_R = 15; // Radius of targets
+    const TARGETS = [
+        { id: 'T1', x: 0, y: 40, z: -50, color: 'red' },
+        { id: 'T2', x: -40, y: -20, z: 0, color: 'lime' },
+        { id: 'T3', x: 40, y: -20, z: 80, color: 'cyan' }
+    ];
+    
+    // --- Math Helpers ---
+    function makeSphere(cx, cy, cz, r) {
+        let x=[], y=[], z=[];
+        const steps = 10;
+        for(let i=0; i<=steps; i++){
+            let lat = (i/steps)*Math.PI;
+            for(let j=0; j<=steps*2; j++){
+                let lon = (j/(steps*2))*2*Math.PI;
+                x.push(cx + r * Math.sin(lat) * Math.cos(lon));
+                y.push(cy + r * Math.sin(lat) * Math.sin(lon));
+                z.push(cz + r * Math.cos(lat));
+            }
+            x.push(null); y.push(null); z.push(null);
+        }
+        return {x,y,z};
+    }
+
+    function project(x, y, z, zv, zh, zs) {
+        if(x===null) return null;
+        let mx = -x / (zv - z);
+        let my = -y / (zh - z);
+        return {
+            x: x + mx * (zs - z),
+            y: y + my * (zs - z),
+            z: zs
+        };
+    }
+
+    // THE SOLVER
+    function solveDepth(width, height, zv, zh, zs) {
+        let ar = width / height;
+        // Z = ( AR*Zv*(Zs-Zh) - Zh*(Zs-Zv) ) / ( AR*(Zs-Zh) - (Zs-Zv) )
+        let term_v = zs - zv;
+        let term_h = zs - zh;
+        let num = (ar * zv * term_h) - (zh * term_v);
+        let den = (ar * term_h) - term_v;
+        if(Math.abs(den) < 0.001) return 999;
+        return num / den;
+    }
+
+    // --- Main Loop ---
+    const sliderV = document.getElementById('slider-v');
+    const sliderH = document.getElementById('slider-h');
+    const trackerDiv = document.getElementById('tracker-data');
+
+    function update() {
+        const zv = parseFloat(sliderV.value);
+        const zh = parseFloat(sliderH.value);
+        const zs = 500; // Fixed Screen
+
+        let data = [];
+        let hudHTML = "";
+
+        TARGETS.forEach(t => {
+            // 1. Draw Source
+            let sphere = makeSphere(t.x, t.y, t.z, OBJ_R);
+            data.push({
+                type: 'scatter3d', mode: 'lines',
+                x: sphere.x, y: sphere.y, z: sphere.z,
+                line: {color: t.color, width: 1}, opacity: 0.3, hoverinfo: 'none'
+            });
+
+            // 2. Project & Measure
+            // Project the bounding box extremes to simulate "CV Measurement"
+            // Width determined by X-extremes (at y=0 approx)
+            // Height determined by Y-extremes (at x=0 approx)
+            
+            // Measure X width on screen
+            let px_r = t.x + OBJ_R + (-(t.x + OBJ_R)/(zv - t.z))*(zs - t.z);
+            let px_l = t.x - OBJ_R + (-(t.x - OBJ_R)/(zv - t.z))*(zs - t.z);
+            let w_proj = Math.abs(px_r - px_l);
+
+            // Measure Y height on screen
+            let py_t = t.y + OBJ_R + (-(t.y + OBJ_R)/(zh - t.z))*(zs - t.z);
+            let py_b = t.y - OBJ_R + (-(t.y - OBJ_R)/(zh - t.z))*(zs - t.z);
+            let h_proj = Math.abs(py_t - py_b);
+
+            // 3. Solve Depth
+            let z_calc = solveDepth(w_proj, h_proj, zv, zh, zs);
+
+            // 4. Update HUD
+            hudHTML += `
+                <div class="tracker-row" style="color:${t.color}">
+                    <span class="tracker-lbl">${t.id} (True Z:${t.z})</span>
+                    <span class="tracker-val">CALC Z: ${z_calc.toFixed(1)}</span>
+                </div>`;
+
+            // 5. Draw Projection
+            let projX=[], projY=[], projZ=[];
+            for(let i=0; i<sphere.x.length; i++){
+                let p = project(sphere.x[i], sphere.y[i], sphere.z[i], zv, zh, zs);
+                if(p){ projX.push(p.x); projY.push(p.y); projZ.push(p.z); }
+                else { projX.push(null); projY.push(null); projZ.push(null); }
+            }
+            data.push({
+                type: 'scatter3d', mode: 'lines',
+                x: projX, y: projY, z: projZ,
+                line: {color: t.color, width: 4}, hoverinfo: 'name', name: `${t.id} Projection`
+            });
+            
+            // 6. Draw "CV Bounding Box" around projection
+            let boxX = [px_l, px_r, px_r, px_l, px_l];
+            let boxY = [py_t, py_t, py_b, py_b, py_t];
+            let boxZ = [zs, zs, zs, zs, zs];
+            data.push({
+                type: 'scatter3d', mode: 'lines',
+                x: boxX, y: boxY, z: boxZ,
+                line: {color: 'white', width: 1, dash:'dot'}, hoverinfo: 'none'
+            });
+        });
+
+        // Slits
+        data.push({x:[0,0], y:[-150,150], z:[zv,zv], mode:'lines', line:{color:'cyan', width:5}, type:'scatter3d'});
+        data.push({x:[-150,150], y:[0,0], z:[zh,zh], mode:'lines', line:{color:'lime', width:5}, type:'scatter3d'});
+        
+        // Screen Plane
+        data.push({
+            x:[-200,200,200,-200,-200], y:[200,200,-200,-200,200], z:[zs,zs,zs,zs,zs],
+            mode:'lines', line:{color:'#333', width:2}, type:'scatter3d'
+        });
+
+        trackerDiv.innerHTML = hudHTML;
+
+        let layout = {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: {l:0, r:0, b:0, t:0}, showlegend: false,
+            scene: {
+                xaxis: {visible:false}, yaxis: {visible:false},
+                zaxis: {title: 'Depth', range: [-100, 600], gridcolor: '#222'},
+                camera: {eye: {x:1.5, y:0.8, z:0.6}},
+                dragmode: 'orbit'
+            }
+        };
+
+        Plotly.react('visualization', data, layout);
+    }
+
+    sliderV.addEventListener('input', update);
+    sliderH.addEventListener('input', update);
+    update();
+</script>
+</body>
+</html>
