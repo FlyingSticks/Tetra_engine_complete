@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetra Codec: Extreme Anamorphic Test</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #050505; color: #fff; font-family: 'Segoe UI', monospace; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        
+        header { 
+            height: 40px; background: #220000; border-bottom: 1px solid #ff4444; display: flex; align-items: center; justify-content: space-between; padding: 0 20px;
+        }
+        h1 { font-size: 14px; margin: 0; color: #ff4444; letter-spacing: 1px; text-transform: uppercase; }
+        .tag { background: #440000; padding: 2px 6px; border-radius: 4px; font-size: 10px; color: #ff8888; border: 1px solid #ff4444; }
+
+        #container { flex: 1; display: flex; position: relative; }
+        .panel { flex: 1; position: relative; border-right: 1px solid #333; display: flex; flex-direction: column; }
+        
+        .overlay-info { 
+            position: absolute; top: 10px; left: 10px; z-index: 10; 
+            background: rgba(20,0,0,0.9); padding: 5px 10px; border-radius: 4px; border: 1px solid #552222; pointer-events: none;
+        }
+        .info-title { font-size: 12px; font-weight: bold; color: #ffaaaa; }
+        .info-detail { font-size: 10px; color: #aa6666; margin-top: 2px; }
+        
+        .plot-div { flex: 1; width: 100%; height: 100%; }
+
+        #connection {
+            position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 20;
+            background: #000; border: 1px solid #552222; padding: 5px 15px; border-radius: 15px;
+            font-size: 11px; color: #ff4444; font-weight: bold;
+            box-shadow: 0 0 20px rgba(255, 68, 68, 0.4);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Tetra Codec <span style="color:#888">//</span> EXTREME PROXIMITY TEST</h1>
+    <div class="tag">WARNING: NEAR SINGULARITY</div>
+</header>
+
+<div id="container">
+    <div class="panel">
+        <div class="overlay-info">
+            <div class="info-title">SERVER FEED (WARPED)</div>
+            <div class="info-detail">Subject is close to Z_Slit</div>
+            <div class="info-detail">Result: Extreme Curvature</div>
+        </div>
+        <div id="plot-server" class="plot-div"></div>
+    </div>
+
+    <div id="connection">CODEC</div>
+
+    <div class="panel" style="border-right: none;">
+        <div class="overlay-info">
+            <div class="info-title">CLIENT VIEW (RESTORED)</div>
+            <div class="info-detail">Math corrects the warp</div>
+            <div class="info-detail">Result: Perfect Geometry</div>
+        </div>
+        <div id="plot-client" class="plot-div"></div>
+    </div>
+</div>
+
+<script>
+    // --- 1. SETTINGS ---
+    // We are positioning the Slits to create MAX stress
+    const RENDER_SETTINGS = {
+        zv: 150,    
+        zh: 250,    
+        zs: 0      
+    };
+    
+    // --- 2. GENERATE CUBE ---
+    const VERTICES = [];
+    const CUBE_SIZE = 30; // Smaller cube to fit in the sweet spot
+    const DENSITY = 30; 
+    
+    function addEdge(p1, p2, color) {
+        for(let i=0; i<=DENSITY; i++) {
+            let t = i/DENSITY;
+            VERTICES.push({
+                x: p1.x + (p2.x - p1.x)*t,
+                y: p1.y + (p2.y - p1.y)*t,
+                z: p1.z + (p2.z - p1.z)*t,
+                col: color
+            });
+        }
+    }
+
+    const s = CUBE_SIZE/2;
+    const c = [
+        {x:-s, y:s, z:-s}, {x:s, y:s, z:-s}, {x:s, y:-s, z:-s}, {x:-s, y:-s, z:-s},
+        {x:-s, y:s, z:s},  {x:s, y:s, z:s},  {x:s, y:-s, z:s},  {x:-s, y:-s, z:s}
+    ];
+    
+    // Simple wireframe colors
+    addEdge(c[0], c[1], '#ff0000'); addEdge(c[1], c[2], '#ff0000');
+    addEdge(c[2], c[3], '#ff0000'); addEdge(c[3], c[0], '#ff0000'); // Front Red
+    
+    addEdge(c[4], c[5], '#0088ff'); addEdge(c[5], c[6], '#0088ff');
+    addEdge(c[6], c[7], '#0088ff'); addEdge(c[7], c[4], '#0088ff'); // Back Blue
+    
+    addEdge(c[0], c[4], '#ffffff'); addEdge(c[1], c[5], '#ffffff');
+    addEdge(c[2], c[6], '#ffffff'); addEdge(c[3], c[7], '#ffffff'); // Sides White
+
+    // --- 3. MATH ENGINE ---
+
+    function encode(v, time) {
+        let ang = time * 0.015;
+        
+        // Spin logic
+        let rx = v.x * Math.cos(ang) - v.z * Math.sin(ang);
+        let rz = v.x * Math.sin(ang) + v.z * Math.cos(ang);
+        
+        let tilt = 0.6;
+        let ry = v.y * Math.cos(tilt) - rz * Math.sin(tilt);
+        let rz_fin = v.y * Math.sin(tilt) + rz * Math.cos(tilt);
+        
+        // --- CRITICAL CHANGE: DEPTH ---
+        // Slits are at 150 and 250.
+        // We place the cube at Z = 280.
+        // This is only 30mm away from the H-Slit!
+        // Expect MASSIVE Y-Magnification.
+        let z_world = 280 + rz_fin; 
+
+        // Project
+        let den_v = z_world - RENDER_SETTINGS.zv; // 280 - 150 = 130
+        let den_h = z_world - RENDER_SETTINGS.zh; // 280 - 250 = 30  <-- TINY DENOMINATOR = HUGE ZOOM
+        
+        // Safety for singularity clipping
+        if(den_h < 5) return null; 
+
+        let u = rx * (-RENDER_SETTINGS.zv) / den_v;
+        let v_coord = ry * (-RENDER_SETTINGS.zh) / den_h;
+
+        // Blob Logic
+        let r = 1.5;
+        let x_edge = (rx + r) * (-RENDER_SETTINGS.zv) / den_v;
+        let w = Math.abs(x_edge - u) * 2;
+        
+        let y_edge = (ry + r) * (-RENDER_SETTINGS.zh) / den_h;
+        let h = Math.abs(y_edge - v_coord) * 2;
+
+        return { u, v: v_coord, w, h, col: v.col };
+    }
+
+    function decode(blob) {
+        if(!blob || blob.h === 0) return null;
+        let ar = blob.w / blob.h;
+        let zv = RENDER_SETTINGS.zv;
+        let zh = RENDER_SETTINGS.zh;
+        
+        let num = zv * zh * (ar - 1);
+        let den = (ar * zh) - zv; 
+
+        if(Math.abs(den) < 0.001) return null;
+        let z_rec = num / den;
+
+        let x_rec = blob.u * (z_rec - zv) / (-zv);
+        let y_rec = blob.v * (z_rec - zh) / (-zh);
+        
+        return { x: x_rec, y: y_rec, z: z_rec, col: blob.col };
+    }
+
+    // --- 4. RENDER LOOP ---
+    let time = 0;
+
+    function update() {
+        time++;
+        
+        let servX=[], servY=[], servC=[];
+        let cliX=[], cliY=[], cliZ=[], cliC=[];
+
+        VERTICES.forEach(v => {
+            let blob = encode(v, time);
+            if(blob) {
+                servX.push(blob.u); servY.push(blob.v); servC.push(blob.col);
+
+                let rec = decode(blob);
+                if(rec) {
+                    cliX.push(rec.x); cliY.push(rec.y); cliZ.push(rec.z); cliC.push(rec.col);
+                }
+            }
+        });
+
+        // DRAW SERVER (Note the distorted Aspect Ratio setting)
+        Plotly.react('plot-server', [{
+            x: servX, y: servY, mode: 'markers', marker: { color: servC, size: 2.5 }, hoverinfo: 'none'
+        }], {
+            paper_bgcolor: '#000', plot_bgcolor: '#000', margin: {l:0,r:0,b:0,t:0},
+            xaxis: {range: [-150, 150], visible:false},
+            yaxis: {range: [-300, 300], visible:false}, // Extended Y-range to catch the stretch
+            showlegend: false
+        });
+
+        // DRAW CLIENT
+        Plotly.react('plot-client', [{
+            type: 'scatter3d', mode: 'markers',
+            x: cliX, y: cliY, z: cliZ, marker: { size: 2, color: cliC, opacity: 1 }, hoverinfo: 'none'
+        }], {
+            paper_bgcolor: '#000', plot_bgcolor: '#000', margin: {l:0,r:0,b:0,t:0}, showlegend: false,
+            scene: {
+                xaxis: {range: [-40,40], visible:false},
+                yaxis: {range: [-40,40], visible:false},
+                zaxis: {range: [250, 310], title: '', showgrid:false, showticklabels:false},
+                camera: { eye: {x: 1.4, y: 0.8, z: 0.6} }
+            }
+        });
+        
+        requestAnimationFrame(update);
+    }
+
+    update();
+
+</script>
+</body>
+</html>

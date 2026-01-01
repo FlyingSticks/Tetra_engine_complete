@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Tetra Codec: OBJ/Vertex Streamer</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { margin: 0; padding: 0; background-color: #050505; color: #fff; font-family: 'Segoe UI', monospace; overflow: hidden; height: 100vh; display: flex; flex-direction: column; }
+        
+        header { 
+            height: 40px; background: #111; border-bottom: 1px solid #333; display: flex; align-items: center; justify-content: space-between; padding: 0 20px;
+        }
+        h1 { font-size: 14px; margin: 0; color: #00e5ff; letter-spacing: 1px; text-transform: uppercase; }
+        .file-tag { background: #222; padding: 2px 6px; border-radius: 4px; font-size: 10px; color: #aaa; border: 1px solid #444; }
+
+        #container { flex: 1; display: flex; position: relative; }
+        .panel { flex: 1; position: relative; border-right: 1px solid #222; display: flex; flex-direction: column; }
+        
+        .overlay-info { 
+            position: absolute; top: 10px; left: 10px; z-index: 10; 
+            background: rgba(0,0,0,0.8); padding: 5px 10px; border-radius: 4px; border: 1px solid #444; pointer-events: none;
+        }
+        .info-title { font-size: 12px; font-weight: bold; color: #eee; }
+        .info-detail { font-size: 10px; color: #aaa; margin-top: 2px; }
+        
+        .plot-div { flex: 1; width: 100%; height: 100%; }
+        
+        #connection {
+            position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 20;
+            background: #000; border: 1px solid #333; padding: 5px 15px; border-radius: 15px;
+            font-size: 11px; color: #ff9900; font-weight: bold;
+            box-shadow: 0 0 15px rgba(255, 150, 0, 0.2);
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>Tetra Codec <span style="color:#666">//</span> OBJ Streamer</h1>
+    <div class="file-tag">FILE: TORUS_KNOT.OBJ (Simulated)</div>
+</header>
+
+<div id="container">
+    <div class="panel">
+        <div class="overlay-info">
+            <div class="info-title">ENCODER OUTPUT</div>
+            <div class="info-detail">Input: 3,000 Vertices</div>
+            <div class="info-detail">Stream: 2D Video Texture</div>
+        </div>
+        <div id="plot-server" class="plot-div"></div>
+    </div>
+
+    <div id="connection">STREAMING</div>
+
+    <div class="panel" style="border-right: none;">
+        <div class="overlay-info">
+            <div class="info-title">DECODER INPUT</div>
+            <div class="info-detail">Reconstructed Mesh</div>
+            <div class="info-detail">Action: Drag to Inspect</div>
+        </div>
+        <div id="plot-client" class="plot-div"></div>
+    </div>
+</div>
+
+<script>
+    // --- 1. SETTINGS (Sensor-Centric V2) ---
+    const RENDER_SETTINGS = {
+        zv: 150,    
+        zh: 250,    
+        zs: 0      
+    };
+    
+    // --- 2. GENERATE "OBJ" (Torus Knot) ---
+    // Simulating parsing an .obj file by generating vertices mathematically
+    const VERTICES = [];
+    const POINT_COUNT = 1500; // Adjust for performance
+    
+    for(let i=0; i<POINT_COUNT; i++) {
+        let t = (i / POINT_COUNT) * Math.PI * 2 * 3; // 3 loops
+        
+        // Torus Knot Formula
+        let p = 2, q = 3;
+        let r = 40 + 15 * Math.cos(q * t);
+        let x = r * Math.cos(p * t);
+        let y = r * Math.sin(p * t);
+        let z = 15 * Math.sin(q * t); // Depth thickness
+        
+        // Color gradient based on position (for visual flair)
+        let hue = (i / POINT_COUNT) * 360;
+        
+        VERTICES.push({ x: x, y: y, z: z, r: 2.5, col: `hsl(${hue}, 80%, 60%)` });
+    }
+
+    // --- 3. THE CODEC ---
+
+    // Encode (3D -> 2D)
+    function encodeVertex(v, time) {
+        // 1. World Transform (Spin the object in front of camera)
+        let angle = time * 0.01;
+        
+        // Rotate around Y axis
+        let rx = v.x * Math.cos(angle) - v.z * Math.sin(angle);
+        let rz = v.x * Math.sin(angle) + v.z * Math.cos(angle);
+        let ry = v.y;
+        
+        // Rotate around X axis (tumbling)
+        let tumble = angle * 0.5;
+        let final_y = ry * Math.cos(tumble) - rz * Math.sin(tumble);
+        let final_z = ry * Math.sin(tumble) + rz * Math.cos(tumble);
+        let final_x = rx;
+
+        // 2. Position in Distal Zone (Z > 250)
+        let z_world = 380 + final_z; 
+
+        // 3. Project
+        let den_v = z_world - RENDER_SETTINGS.zv;
+        let den_h = z_world - RENDER_SETTINGS.zh;
+        
+        if(Math.abs(den_v)<1 || Math.abs(den_h)<1) return null;
+
+        // Center Point
+        let u = final_x * (-RENDER_SETTINGS.zv) / den_v;
+        let v_coord = final_y * (-RENDER_SETTINGS.zh) / den_h;
+
+        // Project Dimensions (radius)
+        let x_edge = (final_x + v.r) * (-RENDER_SETTINGS.zv) / den_v;
+        let w_proj = Math.abs(x_edge - u) * 2;
+        
+        let y_edge = (final_y + v.r) * (-RENDER_SETTINGS.zh) / den_h;
+        let h_proj = Math.abs(y_edge - v_coord) * 2;
+
+        return { u: u, v: v_coord, w: w_proj, h: h_proj, col: v.col };
+    }
+
+    // Decode (2D -> 3D)
+    function decodeVertex(blob) {
+        if(!blob || blob.h === 0) return null;
+        
+        let ar = blob.w / blob.h;
+        let zv = RENDER_SETTINGS.zv;
+        let zh = RENDER_SETTINGS.zh;
+        
+        // Solver V2.1
+        let num = zv * zh * (ar - 1);
+        let den = (ar * zh) - zv; 
+
+        if(Math.abs(den) < 0.001) return null;
+        let z_rec = num / den;
+
+        let x_rec = blob.u * (z_rec - zv) / (-zv);
+        let y_rec = blob.v * (z_rec - zh) / (-zh);
+        
+        return { x: x_rec, y: y_rec, z: z_rec, col: blob.col };
+    }
+
+    // --- 4. RENDER LOOP ---
+    let time = 0;
+    
+    // Unit circle cache
+    const CIRCLE = [];
+    for(let i=0; i<=8; i++) {
+        let t = (i/8)*Math.PI*2;
+        CIRCLE.push([Math.cos(t), Math.sin(t)]);
+    }
+
+    function update() {
+        time++;
+        
+        let serverLinesX=[], serverLinesY=[];
+        let clientX=[], clientY=[], clientZ=[], clientC=[];
+
+        VERTICES.forEach(v => {
+            let blob = encodeVertex(v, time);
+            if(blob) {
+                // Server: Draw Shapes (Simulating Video Feed)
+                // We draw small diamond shapes for speed instead of circles
+                serverLinesX.push(blob.u, blob.u + blob.w/2, blob.u, blob.u - blob.w/2, blob.u, null);
+                serverLinesY.push(blob.v - blob.h/2, blob.v, blob.v + blob.h/2, blob.v, blob.v - blob.h/2, null);
+
+                // Client: Decode
+                let rec = decodeVertex(blob);
+                if(rec) {
+                    clientX.push(rec.x);
+                    clientY.push(rec.y);
+                    clientZ.push(rec.z);
+                    clientC.push(rec.col);
+                }
+            }
+        });
+
+        // Update Server View (2D)
+        Plotly.react('plot-server', [{
+            x: serverLinesX, y: serverLinesY, mode: 'lines', 
+            line: {color: 'rgba(255,255,255,0.6)', width: 1}, hoverinfo:'none'
+        }], {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: {l:0,r:0,b:0,t:0},
+            xaxis: {range: [-150, 150], visible:false},
+            yaxis: {range: [-150, 150], visible:false},
+            showlegend: false
+        });
+
+        // Update Client View (3D)
+        Plotly.react('plot-client', [{
+            type: 'scatter3d', mode: 'markers',
+            x: clientX, y: clientY, z: clientZ,
+            marker: { size: 2, color: clientC, opacity: 0.8 },
+            hoverinfo: 'none'
+        }], {
+            paper_bgcolor: '#000', plot_bgcolor: '#000',
+            margin: {l:0,r:0,b:0,t:0},
+            showlegend: false,
+            scene: {
+                xaxis: {range: [-80,80], visible:false},
+                yaxis: {range: [-80,80], visible:false},
+                zaxis: {range: [300, 460], title: 'Depth', gridcolor:'#222'},
+                camera: { eye: {x: 1.4, y: 1.4, z: 0.5} }
+            }
+        });
+        
+        requestAnimationFrame(update);
+    }
+
+    update(); // Start
+
+</script>
+</body>
+</html>
